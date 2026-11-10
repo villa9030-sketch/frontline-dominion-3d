@@ -391,8 +391,10 @@ func _build_new() -> void:
 	g.add_child(_opt("Opzioni battaglia", ob))
 	var tips_on := bool(Settings.get_value("tips"))
 	var rb := UIKit.hbox(2)
-	var fb := _check("m-fog", bool(o.get("fog", true)), "Nebbia di guerra")
-	fb.tooltip_text = "Vedi solo i tuoi territori e quelli confinanti (l'AAN un anello in più col radar):\naltrove solo stime delle forze nemiche. Vale anche per l'IA."
+	var fb := _seg("m-fog", String(o.get("fog_mode", "light")), [["none", "Nebbia: no"], ["light", "Leggera"], ["full", "Totale"]])
+	fb.tooltip_text = "Nebbia di guerra. Leggera (consigliata): forze esatte nei tuoi territori e in quelli confinanti,\naltrove una stima «circa 10–15». Totale: lontano non vedi nulla. Nessuna: tutto visibile.\nVale anche per le IA, che decidono su ciò che vedono (carte inganno: divisione falsa, silenzio radio, ricognizione)."
+	for c in fb.get_children():
+		c.tooltip_text = fb.tooltip_text
 	rb.add_child(fb)
 	var tb := UIKit.button(("☑  " if tips_on else "☐  ") + "Suggerimenti", "normal", "md", func():
 		Settings.set_value("tips", not bool(Settings.get_value("tips")))

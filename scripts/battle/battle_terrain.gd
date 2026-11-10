@@ -30,7 +30,7 @@ static func configure(s) -> void:
 	INNER_HX = FIELD_HX + 50.0
 	INNER_HZ = FIELD_HZ + 52.5
 	STEP = 2.0 if KS < 1.5 else 3.0
-	OUTER = maxf(1500.0, FIELD_HX + 1300.0)
+	OUTER = maxf(8000.0, FIELD_HX + 7400.0)   # paesaggio esteso: la regione attorno al campo arriva all'orizzonte
 	MASK_HX = FIELD_HX + 200.0
 	MASK_HZ = FIELD_HZ + 187.5
 	MASK_RES = 0.5 if KS < 1.5 else 0.75
@@ -41,7 +41,7 @@ const PARAMS := {
 	"pianura": [1.2, 26.0, 0.0022, false, 0.13, 9999.0],
 	"deserto": [2.2, 55.0, 0.0028, false, 0.09, 9999.0],
 	"urbano": [0.25, 10.0, 0.002, false, 0.2, 9999.0],
-	"montagna": [3.5, 190.0, 0.0024, true, 0.075, 70.0],
+	"montagna": [3.5, 190.0, 0.0024, true, 0.075, 240.0],
 	"foresta": [2.0, 40.0, 0.0026, false, 0.13, 9999.0],
 	"artico": [1.6, 70.0, 0.0022, true, 0.11, -999.0],
 }
@@ -53,6 +53,9 @@ var tkey := "pianura"
 var rng := RandomNumberGenerator.new()
 var noise := FastNoiseLite.new()
 var noise2 := FastNoiseLite.new()
+var noise3 := FastNoiseLite.new()   # montagne lontane (creste)
+var noise4 := FastNoiseLite.new()   # dove stanno le catene montuose
+const FAR_AMP := {"pianura": 520.0, "foresta": 460.0, "montagna": 1100.0, "artico": 700.0, "deserto": 150.0, "urbano": 260.0}
 var xs := PackedFloat32Array()
 var zs := PackedFloat32Array()
 var hts := PackedFloat32Array()
@@ -72,6 +75,7 @@ var terrain_mat: ShaderMaterial
 var ground_cols: Array = []
 var mesh_inst: MeshInstance3D
 var chunks: Array = []         # blocchi della mesh del suolo (MeshInstance3D)
+var chunks_lo: Array = []      # copie rade (passo 8 m) dei blocchi della zona fitta, visibili da lontano
 var _p: Array
 var grass_mms: Array = []      # MultiMesh dell'erba (densità regolabile con la qualità)
 var deco_mms: Array = []       # MultiMesh decorativi fuori campo (cespugli, sassi)
@@ -87,7 +91,9 @@ var field_img: Image
 var _field_ca := 1.0
 var _field_sa := 0.0
 var _field_L := 2000.0
-var hedges: Array = []        # [Vector2 a, Vector2 b, kind] mondo (X,Z): 0 siepe, 1 capezzagna (sterrato), 2 staccionata
+var hedges: Array = []        # [Vector2 a, Vector2 b, kind] mondo (X,Z): 0 siepe, 1 capezzagna (sterrato), 2 staccionata, 3 muretto
+var city_boxes: Array = []    # [centro Vector3, dimensioni Vector3, colore] degli edifici (per i dettagli dei tetti)
+var field_cells: Array = []   # [x, q0, larghezza, altezza, tipo coltura, tinta] nel riferimento ruotato dei campi (per BattleDecor)
 var landmarks: Array = []     # {kind, pos: Vector3, yaw, size: Vector3} (fattorie, case, silos, rovine, ponti...) per FX/distruzione
 var bridges: Array = []       # {a: Vector3, b: Vector3, yaw, len, deck: float (quota del piano), rv}
 var _lm := {}                 # kind -> [[Transform3D, Color]] (MultiMesh dei punti di riferimento)
@@ -97,6 +103,12 @@ var _cols := PackedColorArray()
 var _chunk_meta: Array = []   # [i0, i1, j0, j1] per blocco
 var _dirty_chunks := {}
 var _overview := -1.0
+var _no_trees := false        # --trees=0 (solo misure): nessuna vegetazione in MultiMesh
+var _noise_img: Image         # rumore condiviso con lo shader (noise_tex): maschera dei boschi del paesaggio
+var far_lakes: Array = []     # laghi del paesaggio lontano: [X, Z, R, quota dell'acqua] (solo vista)
+var _glows: Array = []        # luci notturne a terra: [Vector3 pos, raggio, intensità, Color]
+var _glow_mat: ShaderMaterial
+var _night_mat: ShaderMaterial
 
 static func sim_to_world(x: float, y: float) -> Vector2:
 	return Vector2((x - CX) * S, (y - CY) * S)
@@ -120,11 +132,30 @@ func build(s: BattleSim) -> void:
 	noise.fractal_octaves = 4
 	noise.frequency = 0.012
 	noise2.seed = s.seed_ + 101
+	noise3.seed = s.seed_ + 211
+	noise3.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise3.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	noise3.fractal_octaves = 5
+	noise3.frequency = 0.00042
+	noise4.seed = s.seed_ + 307
+	noise4.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise4.frequency = 0.00016
 	noise2.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise2.fractal_type = FastNoiseLite.FRACTAL_RIDGED if _p[3] else FastNoiseLite.FRACTAL_FBM
 	noise2.fractal_octaves = 5
 	noise2.frequency = _p[2]
+	var shot: Node = (Engine.get_main_loop() as SceneTree).root.get_node_or_null("Shot") if Engine.get_main_loop() is SceneTree else null
+	_no_trees = shot != null and String(shot.call("arg", "trees", "1")) == "0"
+	if shot != null:
+		var lod_arg := String(shot.call("arg", "lod", ""))
+		match lod_arg:
+			"hi": LOD_T = 1e9
+			"lo": LOD_T = 1.0
+			"": pass
+			_: LOD_T = float(lod_arg)
+	_make_noise()
 	_prepare_features()
+	_make_far_lakes()
 	_build_road_cells()
 	_build_mesh()
 	_build_masks()
@@ -138,6 +169,19 @@ func build(s: BattleSim) -> void:
 	if tkey == "urbano":
 		_build_city()
 	_build_landmarks()
+	_build_sites()
+	# --decor=0 (solo test/misure): senza i dettagli aggiuntivi di BattleDecor
+	if shot == null or String(shot.call("arg", "decor", "1")) != "0":
+		BattleDecor.new().build(self)
+	if shot == null or String(shot.call("arg", "far", "1")) != "0":
+		BattleLandscape.new().build(self)
+	# diagnostica (solo demo): --dbg=overdraw|wireframe|lighting|unshaded mostra il costo di disegno
+	if shot != null:
+		var dbg := String(shot.call("arg", "dbg", ""))
+		var modes := {"overdraw": Viewport.DEBUG_DRAW_OVERDRAW, "wireframe": Viewport.DEBUG_DRAW_WIREFRAME,
+			"lighting": Viewport.DEBUG_DRAW_LIGHTING, "unshaded": Viewport.DEBUG_DRAW_UNSHADED}
+		if modes.has(dbg):
+			get_viewport().debug_draw = modes[dbg]
 
 # ---------------------------------------------------------------------------- altezza
 func _prepare_features() -> void:
@@ -208,6 +252,11 @@ func _prepare_features() -> void:
 				tail.append(p)
 			outer_roads.append(head + pts + tail)
 
+func _outside_d(X: float, Z: float) -> float:
+	var dx := maxf(0.0, absf(X) - FIELD_HX)
+	var dz := maxf(0.0, absf(Z) - FIELD_HZ)
+	return sqrt(dx * dx + dz * dz)
+
 func _outside(X: float, Z: float) -> float:
 	var dx := maxf(0.0, absf(X) - (FIELD_HX + 8.0))
 	var dz := maxf(0.0, absf(Z) - (FIELD_HZ + 8.0))
@@ -232,7 +281,9 @@ func _h_raw(X: float, Z: float) -> float:
 		for rv in relief.rivers:
 			if x > float(rv["bx0"]) and x < float(rv["bx1"]):
 				rvk = minf(rvk, smoothstep(float(rv["cw"]) * 1.5, float(rv["vw"]), BattleRelief.river_dist(rv, x, y)))
-		h += (n2 * amp_out * o * o + o * amp_out * 0.08) * rvk
+		# valli e passi: il rilievo attorno al campo non è un muro uniforme (prima sembrava una conca rettangolare)
+		var gap := lerpf(0.2, 1.0, smoothstep(0.32, 0.68, noise4.get_noise_2d(X * 3.0, Z * 3.0) * 0.5 + 0.5))
+		h += (n2 * amp_out * o * o * gap + o * amp_out * 0.08) * rvk
 	# rilievi degli ostacoli (rocce, ghiaccio, boschi)
 	if absf(X) < FIELD_HX + 20 and absf(Z) < FIELD_HZ + 20:
 		var mk := Vector2i(int(floor(X / MOUND_CELL)), int(floor(Z / MOUND_CELL)))
@@ -244,9 +295,82 @@ func _h_raw(X: float, Z: float) -> float:
 			if d2 < R * R:
 				var t := 1.0 - d2 / (R * R)
 				h += t * t * m[3]
+	if o > 0.0:
+		var fk := 1.0
+		for rv in relief.rivers:
+			if x > float(rv["bx0"]) and x < float(rv["bx1"]):
+				fk = minf(fk, smoothstep(float(rv["cw"]) * 1.5, float(rv["vw"]) * 1.6, BattleRelief.river_dist(rv, x, y)))
+		h += _far_term(X, Z) * fk
+		# laghi lontani: conca con l'acqua un po' sotto il piano (la quota è decisa quando il lago viene scelto)
+		for L in far_lakes:
+			var dxl: float = X - L[0]
+			var dzl: float = Z - L[1]
+			var dl := sqrt(dxl * dxl + dzl * dzl) / float(L[2])
+			if dl < 1.25:
+				var floor_h: float = float(L[3]) - 1.2 - 5.0 * (1.0 - dl * dl)
+				h = lerpf(h, minf(h, floor_h), 1.0 - smoothstep(0.85, 1.25, dl))
 	if sim.sea:
 		h = relief.shore(h, x, y)
 	return h
+
+## Laghi del paesaggio lontano: 1-3 conche in zone dolci a 700-2600 m dal campo (prima della mesh: il rilievo li accoglie).
+func _make_far_lakes() -> void:
+	var want: int = {"pianura": 3, "foresta": 3, "montagna": 2, "artico": 2, "deserto": 0, "urbano": 1}.get(tkey, 0)
+	var tries := 0
+	while far_lakes.size() < want and tries < 120:
+		tries += 1
+		var a := rng.randf() * TAU
+		var d := rng.randf_range(700.0, 2600.0)
+		var X := cos(a) * (FIELD_HX + d)
+		var Z := sin(a) * (FIELD_HZ + d) * 0.85
+		if sim.sea and X < coast_x(Z) + 700.0:
+			continue
+		var R := rng.randf_range(110.0, 260.0)
+		var ok := true
+		for L in far_lakes:
+			if Vector2(X, Z).distance_to(Vector2(L[0], L[1])) < R + float(L[2]) + 500.0:
+				ok = false
+		if not ok:
+			continue
+		# zona dolce: quote simili attorno
+		var h0 := _h_raw(X, Z)
+		var hmax := h0
+		var hmin := h0
+		for k in 8:
+			var q := Vector2(X, Z) + Vector2.RIGHT.rotated(TAU * k / 8.0) * R * 0.9
+			var hq := _h_raw(q.x, q.y)
+			hmax = maxf(hmax, hq)
+			hmin = minf(hmin, hq)
+		if hmax - hmin > R * 0.12 or hmin < 1.0:
+			continue
+		far_lakes.append([X, Z, R, hmin])
+
+func in_far_lake(p: Vector2, margin := 0.0) -> bool:
+	for L in far_lakes:
+		if p.distance_to(Vector2(L[0], L[1])) < float(L[2]) * 1.25 + margin:
+			return true
+	return false
+
+## Rilievo del paesaggio lontano (solo vista): colline e catene montuose che crescono allontanandosi dal campo.
+func _far_term(X: float, Z: float) -> float:
+	var dx := maxf(0.0, absf(X) - FIELD_HX)
+	var dz := maxf(0.0, absf(Z) - FIELD_HZ)
+	var d := sqrt(dx * dx + dz * dz)
+	if d < 450.0:
+		return 0.0
+	if sim.sea and X < coast_x(Z) + 500.0:
+		return 0.0
+	var k := smoothstep(450.0, 2800.0, d)
+	var where := noise4.get_noise_2d(X, Z) * 0.5 + 0.5 + k * 0.18
+	var ridge := noise3.get_noise_2d(X, Z) * 0.5 + 0.5
+	ridge = pow(clampf(ridge, 0.0, 1.0), 1.8)
+	if tkey == "deserto":
+		# altipiani: cime tagliate piatte (mesa), pareti ripide
+		ridge = minf(ridge, 0.34) / 0.34
+		ridge = smoothstep(0.0, 0.7, ridge)
+	var mount := ridge * float(FAR_AMP.get(tkey, 400.0)) * smoothstep(0.42, 0.72, where)
+	var hills := (noise2.get_noise_2d(X * 0.3, Z * 0.3) * 0.5 + 0.5) * 70.0
+	return (mount + hills) * k
 
 ## Altezza del suolo (m) nel punto mondo X,Z (interpolazione bilineare nella zona regolare).
 func height(X: float, Z: float) -> float:
@@ -382,24 +506,61 @@ func _build_mesh() -> void:
 			var dhx := (hts[j * W + i1] - hts[j * W + i0]) / (xs[i1] - xs[i0])
 			var dhz := (hts[j1 * W + i] - hts[j0 * W + i]) / (zs[j1] - zs[j0])
 			norms[j * W + i] = Vector3(-dhx, 1.0, -dhz).normalized()
-	# a blocchi (culling per riquadro): ~110 × 90 vertici per blocco
+	# a blocchi (culling per riquadro): ~110 × 90 vertici per blocco. La zona fitta (passo 2-12 m: campo + fascia attorno)
+	# ha due livelli di dettaglio: da oltre LOD_D m la mesh a passo 2 m (triangoli di 1-2 px: lo shader del suolo
+	# girava 3-4 volte per pixel) lascia il posto a una copia a passo 8 m con "gonna" sui bordi (niente fessure).
 	var shadow := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if tkey == "montagna" else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var cw := 110
-	var ch := 90
-	var j0 := 0
-	while j0 < Hn - 1:
-		var j1 := mini(Hn - 1, j0 + ch)
-		var i0 := 0
-		while i0 < W - 1:
-			var i1 := mini(W - 1, i0 + cw)
+	var nin_x := int(roundf(2.0 * INNER_HX / STEP))
+	var nin_z := int(roundf(2.0 * INNER_HZ / STEP))
+	var dx0 := maxi(0, _ix0 - 24)
+	var dx1 := mini(W - 1, _ix0 + nin_x + 24)
+	var dz0 := maxi(0, _iz0 - 24)
+	var dz1 := mini(Hn - 1, _iz0 + nin_z + 24)
+	var cuts_x := _cuts(W, dx0, dx1, 110)
+	var cuts_z := _cuts(Hn, dz0, dz1, 90)
+	for zi in cuts_z.size() - 1:
+		var j0: int = cuts_z[zi]
+		var j1: int = cuts_z[zi + 1]
+		for xi in cuts_x.size() - 1:
+			var i0: int = cuts_x[xi]
+			var i1: int = cuts_x[xi + 1]
 			var mi := _chunk(i0, i1, j0, j1, W, verts, norms, cols)
 			mi.cast_shadow = shadow
+			if i0 >= dx0 and i1 <= dx1 and j0 >= dz0 and j1 <= dz1:
+				mi.visibility_range_end = LOD_D
+				var lo := MeshInstance3D.new()
+				lo.name = "GroundLo"
+				lo.mesh = _chunk_mesh(i0, i1, j0, j1, W, verts, norms, cols, 4, 9.0)
+				lo.cast_shadow = shadow
+				lo.visibility_range_begin = LOD_D
+				add_child(lo)
+				chunks_lo.append(lo)
 			add_child(mi)
 			chunks.append(mi)
 			_chunk_meta.append([i0, i1, j0, j1])
-			i0 = i1
-		j0 = j1
 	mesh_inst = chunks[0]
+
+const LOD_D := 760.0   # distanza (m, dal centro del blocco) oltre la quale il suolo passa alla mesh rada
+
+## Tagli dei blocchi lungo un asse: [0, d0, ..., d1, n-1] con tratti non più lunghi di maxw.
+func _cuts(n: int, d0: int, d1: int, maxw: int) -> Array:
+	var out := []
+	var pts := [0]
+	if d0 > 0:
+		pts.append(d0)
+	if d1 < n - 1 and d1 > d0:
+		pts.append(d1)
+	pts.append(n - 1)
+	for k in pts.size() - 1:
+		var a: int = pts[k]
+		var b: int = pts[k + 1]
+		if b <= a:
+			continue
+		var parts := int(ceil(float(b - a) / maxw))
+		for s in parts:
+			out.append(a + (b - a) * s / parts)
+	out.append(n - 1)
+	return out
 
 func _chunk(i0: int, i1: int, j0: int, j1: int, W: int, verts: PackedVector3Array, norms: PackedVector3Array, cols: PackedColorArray) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
@@ -407,16 +568,26 @@ func _chunk(i0: int, i1: int, j0: int, j1: int, W: int, verts: PackedVector3Arra
 	mi.mesh = _chunk_mesh(i0, i1, j0, j1, W, verts, norms, cols)
 	return mi
 
-func _chunk_mesh(i0: int, i1: int, j0: int, j1: int, W: int, verts: PackedVector3Array, norms: PackedVector3Array, cols: PackedColorArray) -> ArrayMesh:
-	var nw := i1 - i0 + 1
-	var nh := j1 - j0 + 1
+## Mesh di un blocco [i0..i1] × [j0..j1]; `stride` > 1 = sottocampionata (gli indici estremi restano: i bordi coincidono
+## con i blocchi vicini), `skirt` > 0 = bordo prolungato verso il basso di tanti metri (copre le fessure fra livelli).
+func _chunk_mesh(i0: int, i1: int, j0: int, j1: int, W: int, verts: PackedVector3Array, norms: PackedVector3Array, cols: PackedColorArray, stride := 1, skirt := 0.0) -> ArrayMesh:
+	var xi := PackedInt32Array()
+	var zj := PackedInt32Array()
+	for i in range(i0, i1, stride):
+		xi.append(i)
+	xi.append(i1)
+	for j in range(j0, j1, stride):
+		zj.append(j)
+	zj.append(j1)
+	var nw := xi.size()
+	var nh := zj.size()
 	var v := PackedVector3Array()
 	var n := PackedVector3Array()
 	var c := PackedColorArray()
 	v.resize(nw * nh); n.resize(nw * nh); c.resize(nw * nh)
 	for j in nh:
 		for i in nw:
-			var src := (j0 + j) * W + i0 + i
+			var src := zj[j] * W + xi[i]
 			var dst := j * nw + i
 			v[dst] = verts[src]; n[dst] = norms[src]; c[dst] = cols[src]
 	var idx := PackedInt32Array()
@@ -431,6 +602,30 @@ func _chunk_mesh(i0: int, i1: int, j0: int, j1: int, W: int, verts: PackedVector
 			idx[q] = a; idx[q + 1] = b; idx[q + 2] = cc
 			idx[q + 3] = b; idx[q + 4] = d; idx[q + 5] = cc
 			q += 6
+	if skirt > 0.0:
+		# perimetro: copia dei vertici di bordo abbassata, pareti a doppia faccia
+		var ring := PackedInt32Array()
+		for i in nw:
+			ring.append(i)
+		for j in range(1, nh):
+			ring.append(j * nw + nw - 1)
+		for i in range(nw - 2, -1, -1):
+			ring.append((nh - 1) * nw + i)
+		for j in range(nh - 2, 0, -1):
+			ring.append(j * nw)
+		var base := v.size()
+		for r in ring:
+			var p := v[r]
+			p.y -= skirt
+			v.append(p); n.append(n[r]); c.append(c[r])
+		var m := ring.size()
+		for k in m:
+			var a := ring[k]
+			var b := ring[(k + 1) % m]
+			var a2 := base + k
+			var b2 := base + (k + 1) % m
+			for tri in [[a, b, a2], [b, b2, a2], [a, a2, b], [b, a2, b2]]:
+				idx.append(tri[0]); idx.append(tri[1]); idx.append(tri[2])
 	var arr := []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = v
@@ -628,7 +823,7 @@ func _build_material() -> void:
 	var g2 := Color(String(T["ground2"]))
 	var cols := {
 		"pianura": [g.lerp(Color(0.33, 0.42, 0.18), 0.4), g2.lerp(Color(0.42, 0.44, 0.22), 0.35), Color(0.38, 0.31, 0.22), Color(0.42, 0.4, 0.36)],
-		"deserto": [g.lerp(Color(0.76, 0.62, 0.42), 0.35), g2.lerp(Color(0.68, 0.52, 0.34), 0.3), Color(0.6, 0.47, 0.32), Color(0.58, 0.42, 0.3)],
+		"deserto": [g.lerp(Color(0.74, 0.67, 0.5), 0.5), g2.lerp(Color(0.66, 0.59, 0.45), 0.45), Color(0.58, 0.5, 0.38), Color(0.55, 0.46, 0.36)],
 		"urbano": [Color(0.36, 0.38, 0.26), Color(0.42, 0.4, 0.3), Color(0.36, 0.32, 0.27), Color(0.45, 0.44, 0.42)],
 		"montagna": [Color(0.35, 0.38, 0.24), Color(0.42, 0.4, 0.3), Color(0.4, 0.34, 0.26), Color(0.43, 0.41, 0.39)],
 		"foresta": [g.lerp(Color(0.2, 0.32, 0.13), 0.4), g2.lerp(Color(0.3, 0.33, 0.16), 0.3), Color(0.3, 0.24, 0.16), Color(0.38, 0.37, 0.33)],
@@ -643,7 +838,7 @@ func _build_material() -> void:
 	terrain_mat.set_shader_parameter("c_dirt", c[2])
 	terrain_mat.set_shader_parameter("c_rock", c[3])
 	terrain_mat.set_shader_parameter("c_snow", Color(0.9, 0.93, 0.97))
-	terrain_mat.set_shader_parameter("c_sand", Color(0.78, 0.7, 0.52))
+	terrain_mat.set_shader_parameter("c_sand", Color(0.76, 0.7, 0.55) if tkey == "deserto" else Color(0.78, 0.7, 0.52))
 	terrain_mat.set_shader_parameter("c_asphalt", Color(0.2, 0.205, 0.215))
 	terrain_mat.set_shader_parameter("c_concrete", Color(0.42, 0.41, 0.39))
 	terrain_mat.set_shader_parameter("c_park", Color(0.27, 0.36, 0.17))
@@ -654,12 +849,13 @@ func _build_material() -> void:
 	terrain_mat.set_shader_parameter("river_wet", 1.0 if (relief.rivers.is_empty() or bool(relief.rivers[0]["water"])) else 0.0)
 	if field_tex != null:
 		terrain_mat.set_shader_parameter("field_tex", field_tex)
+		terrain_mat.set_shader_parameter("field_lin", field_tex)
 		terrain_mat.set_shader_parameter("field_xf", field_xf)
 	var nz := FastNoiseLite.new()
 	nz.seed = 7
 	nz.frequency = 0.012
 	nz.fractal_octaves = 4
-	var img := nz.get_seamless_image(512, 512)
+	var img: Image = _noise_img.duplicate()
 	img.generate_mipmaps()
 	terrain_mat.set_shader_parameter("noise_tex", ImageTexture.create_from_image(img))
 	var nimg := nz.get_seamless_image(512, 512)
@@ -672,7 +868,8 @@ func _build_material() -> void:
 	terrain_mat.set_shader_parameter("mask_rect", Vector4(-MASK_HX, -MASK_HZ, MASK_HX * 2, MASK_HZ * 2))
 	terrain_mat.set_shader_parameter("scorch_tex", scorch_tex)
 	terrain_mat.set_shader_parameter("field_rect", Vector4(-FIELD_HX, -FIELD_HZ, FIELD_HX * 2, FIELD_HZ * 2))
-	for ch in chunks:
+	_bind_photo_textures()
+	for ch in chunks + chunks_lo:
 		(ch as MeshInstance3D).material_override = terrain_mat
 
 # ---------------------------------------------------------------------------- mare
@@ -806,6 +1003,28 @@ func _build_grass() -> void:
 # ---------------------------------------------------------------------------- vegetazione
 var _road_cells := {}
 
+## Rumore a tasselli (lo stesso di noise_tex nello shader): serve anche alla CPU per la maschera dei boschi.
+func _make_noise() -> void:
+	var nz := FastNoiseLite.new()
+	nz.seed = 7
+	nz.frequency = 0.012
+	nz.fractal_octaves = 4
+	_noise_img = nz.get_seamless_image(512, 512)
+
+func _nz(uv: Vector2) -> float:
+	var w := _noise_img.get_width()
+	var h := _noise_img.get_height()
+	return _noise_img.get_pixel(posmod(int(floor(uv.x * w)), w), posmod(int(floor(uv.y * h)), h)).r
+
+## Maschera dei boschi del paesaggio, 0 aperto .. 1 bosco (stessa formula di forest_mask nello shader): gli alberi 3D
+## vicini e le chiome dipinte lontane stanno negli stessi posti.
+func forest_at(p: Vector2) -> float:
+	if _noise_img == null or tkey == "deserto":
+		return 0.0
+	var a := _nz(p / 2600.0 + Vector2(0.13, 0.77)) * 0.8 + _nz(p / 700.0 + Vector2(0.51, 0.29)) * 0.2
+	var th := 0.69 - 0.4 * float(BattleLandscape.FOREST_AMT.get(tkey, 0.25))
+	return smoothstep(th, th + 0.02, a)
+
 func _build_road_cells() -> void:
 	for road in outer_roads:
 		for i in road.size() - 1:
@@ -842,7 +1061,7 @@ func _tree_ok(X: float, Z: float, margin := 6.0) -> bool:
 
 func _add_instances(kind: String, list: Array, shadow := true) -> Array:
 	var made := []
-	if list.is_empty():
+	if list.is_empty() or _no_trees:
 		return made
 	# a blocchi per il culling
 	var chunks := {}
@@ -852,34 +1071,75 @@ func _add_instances(kind: String, list: Array, shadow := true) -> Array:
 			chunks[key] = []
 		chunks[key].append(it)
 	var mesh: Mesh = BattleProps.tree_mesh(kind)
+	var lod: Mesh = BattleProps.tree_lod_mesh(kind)
 	for key in chunks:
 		var items: Array = chunks[key]
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = true
-		mm.mesh = mesh
-		mm.instance_count = items.size()
-		for i in items.size():
-			var it: Array = items[i]
-			var sc: float = it[1]
-			var b := Basis(Vector3.UP, it[2]).scaled(Vector3(sc, sc * (0.9 + 0.2 * fposmod(it[2], 1.0)), sc))
-			mm.set_instance_transform(i, Transform3D(b, it[0]))
-			mm.set_instance_color(i, it[3])
-		var mi := MultiMeshInstance3D.new()
-		mi.multimesh = mm
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadow else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		mi.visibility_range_end = 1400.0
-		add_child(mi)
-		made.append(mi)
-		if kind == "bush":
-			deco_mms.append(mm)
+		# due livelli di dettaglio per blocco: modello completo fino a LOD_T, poi l'albero a 20 triangoli
+		# (stesse istanze: da lontano ~900 triangoli per albero erano puro costo)
+		for lv in (3 if shadow else 2):
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.use_colors = true
+			mm.mesh = mesh if lv == 0 else lod
+			mm.instance_count = items.size()
+			for i in items.size():
+				var it: Array = items[i]
+				var sc: float = it[1]
+				var b := Basis(Vector3.UP, it[2]).scaled(Vector3(sc, sc * (0.9 + 0.2 * fposmod(it[2], 1.0)), sc))
+				mm.set_instance_transform(i, Transform3D(b, it[0]))
+				mm.set_instance_color(i, it[3])
+			var mi := MultiMeshInstance3D.new()
+			mi.multimesh = mm
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			if lv == 0:
+				mi.visibility_range_end = LOD_T
+				mi.set_meta("lod_hi", true)
+			elif lv == 1:
+				mi.visibility_range_begin = LOD_T
+				mi.visibility_range_end = 1400.0
+				mi.set_meta("lod_lo", true)
+				# gemello del livello vicino: BattleMarks replica abbattimenti e cambi di colore
+				(made[made.size() - 1] as Node).set_meta("lod_twin", mm)
+			else:
+				# ombre: le proietta la sagoma a 20 triangoli (da vicino non si nota, il passaggio d'ombra costa 45 volte meno)
+				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+				mi.visibility_range_end = LOD_T
+				mi.set_meta("lod_lo", true)
+				(made[made.size() - 2] as Node).set_meta("lod_shadow", mm)
+			add_child(mi)
+			made.append(mi)
+			if kind == "bush":
+				deco_mms.append(mm)
 	return made
+
+var LOD_T := 480.0   # distanza (m, dal centro del blocco) oltre la quale gli alberi passano al modello a 20 triangoli (--lod=hi|lo per confronti)
+
+## Distanza massima di disegno per un gruppo di alberi restituito da _add_instances (solo il livello lontano;
+## sotto LOD_T è il livello vicino a fermarsi prima).
+func set_tree_range(nodes: Array, end: float, margin := 0.0) -> void:
+	for n in nodes:
+		var gi := n as GeometryInstance3D
+		if gi == null:
+			continue
+		if gi.has_meta("lod_hi"):
+			if end < LOD_T:
+				gi.visibility_range_end = end
+		else:
+			if end <= LOD_T:
+				gi.visible = false
+			else:
+				gi.visibility_range_end = end
+		if margin > 0.0 and gi.visible:
+			gi.visibility_range_end_margin = margin
+			gi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 
 func _tint() -> Color:
 	var v := 0.8 + rng.randf() * 0.4
 	return Color(v * (0.95 + rng.randf() * 0.1), v, v * (0.9 + rng.randf() * 0.1))
 
-func _scatter(kind: String, count: int, smin: float, smax: float, clusters := 0, spread := 40.0, region := 900.0, margin := 6.0) -> Array:
+## `mask_k` > 0: gli alberi seguono la maschera dei boschi del paesaggio (dentro tutti, fuori solo 1 − mask_k):
+## masse boscose vere attorno al campo, continue con le chiome dipinte lontane.
+func _scatter(kind: String, count: int, smin: float, smax: float, clusters := 0, spread := 40.0, region := 900.0, margin := 6.0, mask_k := 0.0) -> Array:
 	var out := []
 	var centers := []
 	region += FIELD_HX - 200.0
@@ -888,7 +1148,7 @@ func _scatter(kind: String, count: int, smin: float, smax: float, clusters := 0,
 	for c in clusters:
 		centers.append(Vector2((rng.randf() * 2 - 1) * region, (rng.randf() * 2 - 1) * region * 0.75))
 	var tries := 0
-	while out.size() < count and tries < count * 6:
+	while out.size() < count and tries < count * (12 if mask_k > 0.0 else 6):
 		tries += 1
 		var X: float
 		var Z: float
@@ -898,12 +1158,23 @@ func _scatter(kind: String, count: int, smin: float, smax: float, clusters := 0,
 			var r := sqrt(rng.randf()) * spread
 			X = c.x + cos(a) * r
 			Z = c.y + sin(a) * r
+		elif mask_k > 0.0:
+			# uniforme sulla corona attorno al campo (la maschera decide dove)
+			X = (rng.randf() * 2 - 1) * (FIELD_HX + region)
+			Z = (rng.randf() * 2 - 1) * (FIELD_HZ + region * 0.75)
+			if _in_field(X, Z, margin):
+				continue
 		else:
 			# densità maggiore vicino al campo
 			var u := pow(rng.randf(), 1.6)
 			var a := rng.randf() * TAU
 			X = cos(a) * (FIELD_HX + 10 + u * region)
 			Z = sin(a) * (FIELD_HZ + 10 + u * region * 0.75)
+		if mask_k > 0.0:
+			# fitti vicino al campo, più radi allontanandosi (da lontano bastano le chiome dipinte)
+			var fd := _outside_d(X, Z)
+			if rng.randf() > lerpf(1.0 - mask_k, 1.0, forest_at(Vector2(X, Z))) / (1.0 + fd / 420.0):
+				continue
 		if not _tree_ok(X, Z, margin):
 			continue
 		out.append([Vector3(X, height(X, Z) - 0.2, Z), lerpf(smin, smax, rng.randf()), rng.randf() * TAU, _tint()])
@@ -957,18 +1228,22 @@ func _build_vegetation() -> void:
 					edge_tree.append([Vector3(pe.x, height(pe.x, pe.y) - 0.2, pe.y), 0.45 + rng.randf() * 0.3, rng.randf() * TAU, _tint()])
 	match tkey:
 		"foresta":
-			pine += _scatter("pine", 4200, 0.8, 1.35, 0, 0, 760)
-			broad += _scatter("broadleaf", 2600, 0.8, 1.3, 0, 0, 760)
+			# masse boscose vere sulla maschera del paesaggio (fitte), più alberi sparsi nelle radure
+			pine += _scatter("pine", 15000, 0.8, 1.35, 0, 0, 760, 6.0, 0.92)
+			broad += _scatter("broadleaf", 9000, 0.8, 1.3, 0, 0, 760, 6.0, 0.92)
+			broad += _scatter("broadleaf", 900, 0.7, 1.2, 0, 0, 760)
 			_add_instances("bush", _scatter("bush", 900, 0.8, 1.6, 0, 0, 300, 2.0), false)
 		"pianura":
-			broad += _scatter("broadleaf", 2200, 0.75, 1.25, 70, 38, 900)
-			pine += _scatter("pine", 500, 0.8, 1.2, 14, 30, 900)
+			broad += _scatter("broadleaf", 1600, 0.75, 1.25, 70, 38, 900)
+			broad += _scatter("broadleaf", 6000, 0.75, 1.25, 0, 0, 900, 6.0, 0.95)
+			pine += _scatter("pine", 2000, 0.8, 1.2, 0, 0, 900, 6.0, 0.95)
 			_add_instances("bush", _scatter("bush", 700, 0.8, 1.6, 0, 0, 350, 2.0), false)
 		"montagna":
-			pine += _scatter("pine", 3600, 0.7, 1.25, 0, 0, 760)
+			pine += _scatter("pine", 11000, 0.7, 1.25, 0, 0, 760, 6.0, 0.88)
 			_add_instances("bush", _scatter("bush", 400, 0.6, 1.2, 0, 0, 300, 2.0), false)
 		"artico":
-			pass
+			# masse scure di conifere sulla neve
+			pine += _scatter("snowpine", 8000, 0.7, 1.2, 0, 0, 800, 6.0, 0.95)
 		"deserto":
 			_add_instances("palm", _scatter("palm", 120, 0.8, 1.2, 6, 25, 700), true)
 			_add_instances("dead", _scatter("dead", 140, 0.6, 1.0, 0, 0, 700), true)
@@ -1237,6 +1512,7 @@ func _build_city() -> void:
 					roof_items.append([Vector3(bx + sx * (0.25 + rng.randf() * 0.5), gy + hgt + 0.7, bz + sz * (0.25 + rng.randf() * 0.5)), Vector3(2.5, 1.4, 2.0)])
 	for it in items:
 		_register_building(AABB(it[0] - it[1] * 0.5, it[1]))
+		city_boxes.append([it[0], it[1], it[2]])
 	var chunks := {}
 	for it in items:
 		var key := Vector2i(int(floor(it[0].x / 200.0)), int(floor(it[0].z / 200.0)))
@@ -1391,8 +1667,34 @@ func update_woods(cam_pos: Vector3, focus: Array, dt: float, check: bool) -> voi
 		for n in w["nodes"]:
 			(n as GeometryInstance3D).transparency = f
 
+## Texture fotografiche CC0 del terreno (Poly Haven): erba, terra, roccia, neve, sabbia, sottobosco.
+## Se mancano (o con --tex=0) il terreno resta procedurale come prima.
+const PHOTO_TEX := {"grass": "grass_ground_%s_2k", "dirt": "brown_mud_dry_%s_2k", "rock": "aerial_rocks_02_%s_1k",
+	"snow": "snow_02_%s_1k", "sand": "aerial_sand_%s_1k", "leaf": "forest_leaves_02_%s_1k"}
+func _bind_photo_textures() -> void:
+	var shot: Node = (Engine.get_main_loop() as SceneTree).root.get_node_or_null("Shot") if Engine.get_main_loop() is SceneTree else null
+	if shot != null and String(shot.call("arg", "tex", "1")) == "0":
+		terrain_mat.set_shader_parameter("tex_k", 0.0)
+		terrain_mat.set_shader_parameter("sat_k", 1.24)
+		return
+	var ok := true
+	for k in PHOTO_TEX:
+		var base := "res://assets/textures/terrain/" + String(PHOTO_TEX[k])
+		var dname := base % ("diffuse" if k == "leaf" else "diff") + ".jpg"
+		var nname := base % "nor_gl" + ".jpg"
+		if not ResourceLoader.exists(dname) or not ResourceLoader.exists(nname):
+			ok = false
+			break
+		terrain_mat.set_shader_parameter("t_" + k, load(dname))
+		terrain_mat.set_shader_parameter("n_" + k, load(nname))
+	terrain_mat.set_shader_parameter("tex_k", 1.0 if ok else 0.0)
+	terrain_mat.set_shader_parameter("sat_k", 1.0 if ok else 1.24)
+
 ## Densità della vegetazione/erba secondo la qualità (0..1).
 func set_density(f: float) -> void:
+	if terrain_mat != null:
+		terrain_mat.set_shader_parameter("detail_k", 1.0 if f > 0.4 else 0.0)
+		terrain_mat.set_shader_parameter("tex_two", 1.0 if f > 0.4 else 0.0)
 	for mm in grass_mms:
 		(mm as MultiMesh).visible_instance_count = int((mm as MultiMesh).instance_count * f)
 	for mm in deco_mms:
@@ -1502,6 +1804,17 @@ func minimap_image(w: int, h: int, hx: float, hz: float) -> Image:
 	return img
 
 ## Quota del tetto più alto sotto il punto (0 se nessun edificio), con un margine di 6 m attorno.
+## Vero se il punto è dentro la pianta di un edificio (senza margine).
+func inside_building(X: float, Z: float) -> bool:
+	var k := Vector2i(int(floor(X / BLD_CELL)), int(floor(Z / BLD_CELL)))
+	if not _bld_cells.has(k):
+		return false
+	for bb in _bld_cells[k]:
+		var b: AABB = bb
+		if X > b.position.x and X < b.end.x and Z > b.position.z and Z < b.end.z:
+			return true
+	return false
+
 func roof_height(X: float, Z: float) -> float:
 	if _bld_cells.is_empty():
 		return 0.0
@@ -1566,16 +1879,25 @@ func _build_fields() -> void:
 			var px1 := int((x + wdt + L * 0.5) * ppm)
 			var py0 := int((q0 + L * 0.5) * ppm)
 			var py1 := int((q0 + hgt + L * 0.5) * ppm)
+			# fuori dal campo, dove il paesaggio è bosco (maschera condivisa): niente coltivi, ci stanno gli alberi
+			var cwld := _fw(Vector2(x + wdt * 0.5, q0 + hgt * 0.5))
+			if not _in_field(cwld.x, cwld.y, 40.0) and forest_at(cwld) > 0.5:
+				field_img.fill_rect(Rect2i(px0, py0, maxi(1, px1 - px0), maxi(1, py1 - py0)), Color(0, 0, 0, 0))
+				prev_t = 0
+				ncell += 1
+				x += wdt
+				continue
 			field_img.fill_rect(Rect2i(px0, py0, maxi(1, px1 - px0), maxi(1, py1 - py0)), Color(t / 255.0, tint, trk, 1.0))
+			field_cells.append([x, q0, wdt, hgt, t, tint])
 			# confini 3D: lato sinistro della cella (tra due celle) e lato inferiore (tra due righe)
 			if ncell > 0 and (t > 0 or prev_t > 0):
 				var r := rng.randf()
-				var kind := 0 if r < 0.58 else (2 if r < 0.72 else (1 if r < 0.82 else -1))
+				var kind := 0 if r < 0.58 else (2 if r < 0.72 else (1 if r < 0.82 else (3 if r < 0.93 else -1)))
 				if kind >= 0:
 					segs.append([Vector2(x, q0), Vector2(x, q0 + hgt), kind])
 			if t > 0 and not track_row:
 				var r2 := rng.randf()
-				var kind2 := 0 if r2 < 0.5 else (2 if r2 < 0.62 else -1)
+				var kind2 := 0 if r2 < 0.5 else (2 if r2 < 0.62 else (3 if r2 < 0.74 else -1))
 				if kind2 >= 0:
 					segs.append([Vector2(x, q0), Vector2(x + wdt, q0), kind2])
 			prev_t = t
@@ -1591,16 +1913,18 @@ func _build_fields() -> void:
 		var cw := _fq(sim_to_world(o["x"], o["y"]))
 		var R := float(o.get("R", o.get("r", 20.0))) * S * 1.12
 		var c := Vector2i(int((cw.x + L * 0.5) * ppm), int((cw.y + L * 0.5) * ppm))
-		var rp := int(ceil(R * ppm))
+		var rp := int(ceil(R * ppm)) + 2
 		for j in range(c.y - rp, c.y + rp + 1):
 			for i in range(c.x - rp, c.x + rp + 1):
 				if i < 0 or j < 0 or i >= N or j >= N:
 					continue
 				var dx := (i - c.x) / ppm
 				var dy := (j - c.y) / ppm
-				if dx * dx + dy * dy <= R * R:
-					var old := field_img.get_pixel(i, j)
-					old.a = 0.0
+				# copertura antialias del bordo (in texel): con il filtro lineare dello shader il cerchio resta tondo
+				var cov := clampf((sqrt(dx * dx + dy * dy) - R) * ppm + 0.5, 0.0, 1.0)
+				var old := field_img.get_pixel(i, j)
+				if cov < old.a:
+					old.a = cov
 					field_img.set_pixel(i, j, old)
 	field_tex = ImageTexture.create_from_image(field_img)
 	# siepi, staccionate, capezzagne (solo vicino al campo); i boschi non sono ancora costruiti: cerchi dagli ostacoli
@@ -1645,6 +1969,8 @@ func _build_fields() -> void:
 						_mask_segment(piece_a, pb, 1.3)
 					2:
 						_fence_line(piece_a, pb)
+					3:
+						_wall_line(piece_a, pb)
 					0:
 						var d := piece_a.distance_to(pb)
 						var m := int(d / 3.0)
@@ -1700,8 +2026,8 @@ func _river_water(rv: Dictionary) -> void:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 	var cw: float = rv["cw"]
-	var y := -1100.0
-	var y_end := float(sim.H) + 1100.0
+	var y := -OUTER * 0.72 / S
+	var y_end := float(sim.H) + OUTER * 0.72 / S
 	var hw := cw * S * 1.05
 	while y <= y_end:
 		var x := BattleRelief.river_x(rv, y)
@@ -1779,6 +2105,21 @@ func _fence_line(a: Vector2, b: Vector2) -> void:
 		var p := a + dir * (i * 2.0)
 		var seg := minf(2.0, L - i * 2.0)
 		_lm_add("fence", Vector3(p.x, height(p.x, p.y) - 0.05, p.y), yaw, Vector3(1.0, 1.0, seg), Color(0.9 + rng.randf() * 0.2, 0.9 + rng.randf() * 0.2, 0.9 + rng.randf() * 0.15))
+
+## Muretto a secco da a a b (mondo): pezzi da 2 m che seguono il terreno.
+func _wall_line(a: Vector2, b: Vector2) -> void:
+	var d := b - a
+	var L := d.length()
+	if L < 2.0:
+		return
+	var dir := d / L
+	var yaw := atan2(dir.x, dir.y)
+	var n := int(L / 2.0)
+	for i in n:
+		var p := a + dir * (i * 2.0)
+		var seg := minf(2.0, L - i * 2.0)
+		var v := 0.88 + rng.randf() * 0.2
+		_lm_add("wall", Vector3(p.x, height(p.x, p.y) - 0.12, p.y), yaw, Vector3(1.0, 0.85 + rng.randf() * 0.3, seg), Color(v, v, v * 0.97))
 
 ## Sito adatto a un edificio: pianeggiante, non su strade/boschi/fiumi/lago/acqua, lontano da altri punti di riferimento.
 func _site_ok(X: float, Z: float, r: float, allow_in_field := false) -> bool:
@@ -1984,6 +2325,82 @@ func _build_landmarks() -> void:
 					break
 	_flush_landmarks()
 
+## Edifici del territorio sul campo (`sim.landmarks`, omogeneità campagna→battaglia: {key, name, x, y, w, h} in px sim):
+## compound con i pezzi dei punti di riferimento, registrati come edifici (occlusione, distruzione di BattleMarks).
+func _build_sites() -> void:
+	if not ("landmarks" in sim):
+		return
+	for lm in sim.landmarks:
+		var key := String(lm["key"])
+		var w: float = float(lm["w"]) * S
+		var h: float = float(lm["h"]) * S
+		var c := sim_to_world(float(lm["x"]) + float(lm["w"]) * 0.5, float(lm["y"]) + float(lm["h"]) * 0.5)
+		var gy := height(c.x, c.y)
+		var at := func(ox: float, oz: float) -> Vector3:
+			return Vector3(c.x + ox, height(c.x + ox, c.y + oz) - 0.25, c.y + oz)
+		var grey := Color(0.62, 0.62, 0.6)
+		match key:
+			"fabbrica":
+				# capannoni, ciminiera, serbatoi, silos
+				_lm_add("shed", at.call(-10.0, -6.0), 0.0, Vector3(2.4, 2.2, 2.2), Color(0.9, 0.88, 0.84), Vector3(20.0, 8.5, 12.5))
+				_lm_add("shed", at.call(10.0, -6.0), 0.0, Vector3(2.4, 2.2, 2.2), Color(0.86, 0.84, 0.8), Vector3(20.0, 8.5, 12.5))
+				_lm_add("slab", at.call(-18.0, 9.0), 0.0, Vector3(2.4, 19.0, 2.4), Color(0.5, 0.42, 0.38), Vector3(2.4, 19.0, 2.4))
+				_lm_add("tank", at.call(4.0, 10.0), 0.3, Vector3(2.0, 1.6, 2.0), Color(0.75, 0.74, 0.7), Vector3(5.2, 6.0, 5.2))
+				_lm_add("silo", at.call(14.0, 10.0), 0.0, Vector3.ONE, Color(1, 1, 1), Vector3(5.4, 14.2, 5.4))
+				_lm_add("silo", at.call(20.0, 10.0), 0.0, Vector3.ONE, Color(1, 1, 1), Vector3(5.4, 14.2, 5.4))
+			"aeroporto":
+				# pista in cemento, hangar, torretta, luci di pista
+				_lm_add("slab", Vector3(c.x, gy - 0.1, c.y + 11.0), 0.0, Vector3(w * 0.98, 0.3, 9.0), Color(0.5, 0.5, 0.48))
+				for k in 6:
+					_lm_add("slab", Vector3(c.x - w * 0.45 + k * w * 0.18, gy + 0.2, c.y + 11.0), 0.0, Vector3(3.0, 0.05, 0.5), Color(0.95, 0.95, 0.9))
+				_lm_add("shed", at.call(-12.0, -8.0), 0.0, Vector3(2.6, 2.6, 2.6), Color(0.6, 0.62, 0.6), Vector3(21.0, 10.0, 14.5))
+				_lm_add("shed", at.call(12.0, -8.0), 0.0, Vector3(2.6, 2.6, 2.6), Color(0.58, 0.6, 0.6), Vector3(21.0, 10.0, 14.5))
+				_lm_add("slab", at.call(-22.0, -12.0), 0.0, Vector3(3.0, 11.0, 3.0), grey, Vector3(3.0, 11.0, 3.0))
+				_lm_add("slab", at.call(-22.0, -12.0), 0.0, Vector3(5.0, 2.0, 5.0), Color(0.4, 0.55, 0.65))
+			"porto":
+				_lm_add("barn", at.call(-12.0, -4.0), PI * 0.5, Vector3(1.3, 1.2, 1.3), Color(0.8, 0.8, 0.82), Vector3(12.0, 8.0, 21.0))
+				_lm_add("barn", at.call(6.0, -4.0), PI * 0.5, Vector3(1.3, 1.2, 1.3), Color(0.78, 0.76, 0.8), Vector3(12.0, 8.0, 21.0))
+				_lm_add("tank", at.call(18.0, 8.0), 0.0, Vector3(1.8, 1.5, 1.8), Color(0.8, 0.5, 0.3), Vector3(4.6, 5.5, 4.6))
+				_lm_add("slab", at.call(-4.0, 12.0), 0.0, Vector3(1.0, 14.0, 1.0), Color(0.75, 0.6, 0.2), Vector3(1.0, 14.0, 1.0))
+				_lm_add("slab", at.call(-4.0, 12.0 + 7.0), 0.0, Vector3(0.6, 0.6, 14.0), Color(0.75, 0.6, 0.2))
+				for k in 8:
+					_lm_add("slab", at.call(-20.0 + k * 5.5, 14.0), 0.0, Vector3(4.8, 2.6, 2.4), Color(0.5 + 0.1 * (k % 3), 0.4, 0.3 + 0.2 * (k % 2)), Vector3(4.8, 2.6, 2.4))
+			"impianto":
+				for k in 4:
+					_lm_add("tank", at.call(-15.0 + k * 10.0, 6.0), 0.0, Vector3(2.6, 2.2, 2.6), Color(0.78, 0.78, 0.74), Vector3(6.8, 8.0, 6.8))
+				_lm_add("silo", at.call(-16.0, -9.0), 0.0, Vector3(0.8, 1.8, 0.8), Color(0.7, 0.7, 0.7), Vector3(4.4, 25.0, 4.4))
+				_lm_add("slab", at.call(-2.0, -9.0), 0.0, Vector3(16.0, 1.2, 1.0), Color(0.55, 0.55, 0.52))
+				_lm_add("slab", at.call(-2.0, -11.0), 0.0, Vector3(16.0, 2.4, 0.8), Color(0.5, 0.52, 0.5))
+				_lm_add("shed", at.call(14.0, -9.0), 0.0, Vector3(1.6, 1.6, 1.6), Color(0.85, 0.85, 0.8), Vector3(13.0, 6.0, 9.0))
+			"caserma":
+				for k in 3:
+					_lm_add("house", at.call(-16.0 + k * 16.0, -6.0), 0.0, Vector3(1.4, 0.9, 1.1), Color(0.72, 0.74, 0.66), Vector3(16.0, 7.5, 9.0))
+				_lm_add("slab", at.call(0.0, 9.0), 0.0, Vector3(0.3, 9.0, 0.3), Color(0.8, 0.8, 0.8))
+				_lm_add("slab", at.call(0.9, 9.0 + 0.0), 0.0, Vector3(1.8, 1.1, 0.05), Color(0.85, 0.2, 0.15))
+				_lm_add("car", at.call(-20.0, 10.0), PI * 0.5, Vector3(1.3, 1.2, 1.4), Color(0.33, 0.36, 0.28))
+				_lm_add("car", at.call(-16.0, 10.0), PI * 0.5, Vector3(1.3, 1.2, 1.4), Color(0.33, 0.36, 0.28))
+			_:
+				# fortino: casamatta bassa in cemento con feritoie e muretti
+				_lm_add("slab", at.call(0.0, 0.0), 0.0, Vector3(9.0, 2.6, 7.0), Color(0.5, 0.5, 0.47), Vector3(9.0, 2.6, 7.0))
+				_lm_add("slab", at.call(0.0, -3.4), 0.0, Vector3(6.0, 0.6, 0.4), Color(0.15, 0.15, 0.15))
+				_lm_add("ruin", at.call(-12.0, 6.0), 0.4, Vector3.ONE, Color(0.9, 0.9, 0.9))
+				_wall_line(c + Vector2(-14.0, -10.0), c + Vector2(14.0, -10.0))
+		# recinzione sul perimetro (tre lati) e nome registrato per gli effetti
+		var hw := w * 0.5
+		var hh := h * 0.5
+		var corners := [c + Vector2(-hw, -hh), c + Vector2(hw, -hh), c + Vector2(hw, hh), c + Vector2(-hw, hh)]
+		for k in 3:
+			_fence_line(corners[k], corners[(k + 1) % 4])
+	_flush_landmarks()
+
+# oggetti piccoli: distanza massima di disegno (sfumano), senza ombra, densità ridotta sulle qualità basse
+const LM_RANGE := {"fhouse": 12000.0, "church": 12000.0, "wire": 520.0, "fence": 520.0, "wall": 700.0, "bale": 560.0, "bales": 650.0, "woodpile": 380.0, "lamp": 480.0,
+	"car": 620.0, "bench": 300.0, "bin": 300.0, "trough": 380.0}
+const LM_NO_SHADOW := ["wire", "fence", "lamp", "bench", "bin", "fhouse", "church"]
+const LM_DECO := ["bale", "car", "bench", "bin", "woodpile", "trough"]
+
+const NIGHT_KINDS := ["fhouse", "house", "church", "hut", "chalet", "barn"]   # finestre accese di notte
+
 func _flush_landmarks() -> void:
 	for kind in _lm:
 		var items: Array = _lm[kind]
@@ -2000,19 +2417,102 @@ func _flush_landmarks() -> void:
 		var mi := MultiMeshInstance3D.new()
 		mi.name = "LM_" + kind
 		mi.multimesh = mm
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if kind in ["wire", "fence"] else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-		mi.visibility_range_end = 520.0 if kind in ["wire", "fence"] else 2200.0
-		if kind in ["wire", "fence"]:
+		if kind in NIGHT_KINDS:
+			mi.material_override = _night_material()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if kind in LM_NO_SHADOW else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		mi.visibility_range_end = float(LM_RANGE.get(kind, 2200.0))
+		if LM_RANGE.has(kind):
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 			mi.visibility_range_end_margin = 60.0
+		if kind in LM_DECO:
+			deco_mms.append(mm)   # densità secondo la qualità (set_density)
 		add_child(mi)
 	_lm.clear()
+
+# ---------------------------------------------------------------------------- notte: finestre accese e chiazze di luce
+const NIGHT_SHADER := """
+shader_type spatial;
+render_mode cull_disabled;
+uniform float night = 0.0;
+varying flat float inst;
+void vertex() { inst = float(INSTANCE_ID); }
+void fragment() {
+	vec3 c = COLOR.rgb;
+	vec3 alb = mix(pow((c + vec3(0.055)) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
+	ALBEDO = alb;
+	ROUGHNESS = 0.88;
+	SPECULAR = 0.3;
+	// finestre (scure nel modello): di notte si accendono, non tutte e con toni diversi
+	float win = step(c.r + c.g + c.b, 0.5);
+	float h = fract(sin(inst * 12.9898 + 7.1) * 43758.5453);
+	float on = step(h, 0.78);
+	vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.95, 0.9, 0.75), step(0.5, fract(h * 7.0)));
+	EMISSION = warm * 2.8 * night * win * on;
+}
+"""
+const GLOW_SHADER := """
+shader_type spatial;
+render_mode blend_add, unshaded, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled;
+uniform float night = 0.0;
+void fragment() {
+	float d = length(UV - 0.5) * 2.0;
+	float a = pow(max(0.0, 1.0 - d), 2.4);
+	// da lontano (vista strategica) le chiazze restano leggibili: un po' più intense con la distanza
+	float dc = length(VERTEX);
+	a *= 1.0 + smoothstep(300.0, 1200.0, dc) * 1.2;
+	ALBEDO = COLOR.rgb * a * night;
+	ALPHA = a * night;
+}
+"""
+
+func _night_material() -> ShaderMaterial:
+	if _night_mat == null:
+		var sh := Shader.new()
+		sh.code = NIGHT_SHADER
+		_night_mat = ShaderMaterial.new()
+		_night_mat.shader = sh
+	return _night_mat
+
+## Registra una chiazza di luce a terra (lampione, casa, piazza) che si vede solo di notte.
+func add_glow(p: Vector2, r: float, k: float, col := Color(1.0, 0.8, 0.5)) -> void:
+	_glows.append([Vector3(p.x, height(p.x, p.y) + 0.25, p.y), r, k, col])
+
+## Notte (BattleWeather): finestre accese e luci dei lampioni/paesi (k 0 = giorno).
+func set_night(k: float) -> void:
+	_night_material().set_shader_parameter("night", k)
+	if _glow_mat == null and k > 0.001 and not _glows.is_empty():
+		var sh := Shader.new()
+		sh.code = GLOW_SHADER
+		_glow_mat = ShaderMaterial.new()
+		_glow_mat.shader = sh
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(2.0, 2.0)
+		pm.material = _glow_mat
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = pm
+		mm.instance_count = _glows.size()
+		for i in _glows.size():
+			var g: Array = _glows[i]
+			var r: float = g[1]
+			mm.set_instance_transform(i, Transform3D(Basis.IDENTITY.scaled(Vector3(r, 1.0, r)), g[0]))
+			var c: Color = g[3]
+			mm.set_instance_color(i, Color(c.r * g[2], c.g * g[2], c.b * g[2], 1.0))
+		var mi := MultiMeshInstance3D.new()
+		mi.name = "NightGlows"
+		mi.multimesh = mm
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.visibility_range_end = 6000.0
+		add_child(mi)
+	if _glow_mat != null:
+		_glow_mat.set_shader_parameter("night", k)
 
 # ============================================================================ Fase 7 — servizi per vista e FX
 ## Da chiamare ogni frame: crateri, parametro "vista d'insieme" dello shader (carta tattica) e blocchi del suolo deformati.
 func update_view(cam_dist: float, dt: float) -> void:
 	update_scorch(dt)
-	var ov := smoothstep(105.0, 215.0, cam_dist)
+	var ov := smoothstep(420.0, 700.0, cam_dist)   # carta tattica solo dalla vista strategica: sotto resta il terreno fotografico
 	if absf(ov - _overview) > 0.02 or (ov == 0.0 and _overview != 0.0):
 		_overview = ov
 		terrain_mat.set_shader_parameter("overview", ov)

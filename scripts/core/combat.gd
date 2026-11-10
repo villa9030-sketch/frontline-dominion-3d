@@ -56,6 +56,9 @@ static func combat_mods(game, player_idx: int, role: String, terr_idx: int, opts
 	var vet := clampi(int(opts.get("vet", 0)) if opts.get("vet") != null else 0, 0, 3)
 	if vet > 0:
 		mods["atk"] *= 1.0 + VET_BONUS * vet
+	# logoramento (docs/omogeneita.md §4): truppe reduci da una battaglia recente combattono al −15%
+	if bool(opts.get("worn", false)):
+		mods["atk"] *= float(Data.WORN_MUL)
 	if game != null and game.terr != null and not game.terr.is_empty():
 		if role == "def":
 			var t = game.terr[terr_idx]
@@ -75,7 +78,10 @@ static func combat_mods(game, player_idx: int, role: String, terr_idx: int, opts
 	# contesto tattico per la risoluzione con BattleSim (solo tipi JSON)
 	var ctx := {"ter": String(T["ter"]) if T != null else "pianura", "role": role, "terr": terr_idx, "sea": bool(opts.get("sea", false)),
 		"human": p != null and bool(p.get("human", false)), "faction": int(p["faction"]) if p != null and p.get("faction") != null else -1,
-		"bunkers": 0, "support": 0, "fort": {}}
+		"bunkers": 0, "support": 0, "fort": {}, "buildings": [], "hq": false, "air": false, "naval": 0,
+		"manual": bool(opts.get("manual", false)) and p != null and bool(p.get("human", false)), "worn": bool(opts.get("worn", false))}
+	if opts.get("reinf") is Dictionary:
+		ctx["reinf"] = opts["reinf"]
 	if game != null and game.terr != null and not game.terr.is_empty() and terr_idx >= 0 and terr_idx < game.terr.size():
 		var tt = game.terr[terr_idx]
 		if role == "def" and tt != null:
@@ -84,12 +90,32 @@ static func combat_mods(game, player_idx: int, role: String, terr_idx: int, opts
 			var fo = tt.get("fort")
 			if fo is Dictionary:
 				ctx["fort"] = fo.duplicate()
-		if p != null and int(p.get("tech", 1)) >= 3 and T != null:
-			var n := 0
+			# omogeneità §2: edifici del territorio sul campo, QG della capitale, porto = tiro navale del difensore
+			for b in tt["buildings"]:
+				ctx["buildings"].append(String(b))
+			ctx["hq"] = p != null and int(p["hq"]) == terr_idx
+			if tt["buildings"].has("porto") and T != null and bool(T.get("coastal", false)) and not (float(tt["sabotage"]) > 0):
+				ctx["naval"] = int(BattleRules.NAVAL_SUPPORT[1])
+		if p != null and T != null:
+			if int(p.get("tech", 1)) >= 3:
+				var n := 0
+				for j in T["adj"]:
+					if game.terr[j]["owner"] == player_idx:
+						n += int(game.terr[j]["forces"].get("art", 0))
+				ctx["support"] = n
+			# supporto aereo (J) solo con un aeroporto proprio nel territorio o in un confinante
+			var air: bool = role == "def" and tt["owner"] == player_idx and tt["buildings"].has("aeroporto") and not (float(tt["sabotage"]) > 0)
 			for j in T["adj"]:
-				if game.terr[j]["owner"] == player_idx:
-					n += int(game.terr[j]["forces"].get("art", 0))
-			ctx["support"] = n
+				var tj = game.terr[j]
+				if tj["owner"] == player_idx and tj["buildings"].has("aeroporto") and not (float(tj["sabotage"]) > 0):
+					air = true
+			ctx["air"] = air
+			# tiro navale dell'attaccante: sbarco dal mare con porto nel territorio di partenza (o fazione navale)
+			if role == "att" and bool(opts.get("sea", false)) and opts.get("fromIdx") != null and int(opts["fromIdx"]) >= 0:
+				var f2 = game.terr[int(opts["fromIdx"])]
+				var naval_fac: bool = p.get("fac") != null and bool(p["fac"]["mods"].get("naval", false))
+				if naval_fac or (f2 != null and f2["buildings"].has("porto")):
+					ctx["naval"] = int(BattleRules.NAVAL_SUPPORT[0])
 	mods["ctx"] = ctx
 	return mods
 
@@ -267,11 +293,18 @@ static func _resolve_tactical(att_forces: Dictionary, def_forces: Dictionary, mo
 		"terrIdx": int(cd.get("terr", -1)), "terrain": ter, "terrName": "", "sea": bool(ca.get("sea", false)),
 		"seed": int(rng.randi() & 0x3fffffff) + 1,
 		"att": {"player": -1, "name": "Attaccante", "forces": A, "mods": mods_a if mods_a != null else default_mods(), "human": false,
-			"faction": int(ca.get("faction", -1))},
+			"faction": int(ca.get("faction", -1)), "air": bool(ca.get("air", false)), "naval": int(ca.get("naval", 0))},
 		"def": {"player": -1, "name": "Difensore", "forces": Df, "mods": mods_d if mods_d != null else default_mods(), "human": false,
-			"bunkers": int(cd.get("bunkers", 0)), "fort": cd.get("fort", {}), "faction": int(cd.get("faction", -1))},
+			"bunkers": int(cd.get("bunkers", 0)), "fort": cd.get("fort", {}), "faction": int(cd.get("faction", -1)),
+			"air": bool(cd.get("air", false)), "naval": int(cd.get("naval", 0))},
 		"support": {"att": int(ca.get("support", 0)), "def": int(cd.get("support", 0))},
+		"buildings": cd.get("buildings", []), "hq": bool(cd.get("hq", false)),
 	}
+	# omogeneità §2: rinforzi dai territori vicini (ctx.reinf = {forces, dir, t})
+	for sk in ["att", "def"]:
+		var c: Dictionary = ca if sk == "att" else cd
+		if c.get("reinf") is Dictionary and Data.total_units(_iforces(c["reinf"].get("forces"))) > 0:
+			setup[sk]["reinf"] = c["reinf"]
 	var b := BattleSim.new(setup)
 	var r: Dictionary = b.run_headless()
 	var secs := b.time
@@ -299,7 +332,8 @@ static func _resolve_tactical(att_forces: Dictionary, def_forces: Dictionary, mo
 	stats["tactical_ms"] += ms
 	stats["tactical_max_ms"] = maxi(int(stats["tactical_max_ms"]), ms)
 	return {"att": att, "def": def, "winner": winner, "rounds": maxi(1, int(secs)), "attLosses": att_losses, "defLosses": def_losses,
-		"engine": "tactical", "ms": ms, "time": secs}
+		"engine": "tactical", "ms": ms, "time": secs, "attReinf": _iforces(r.get("attReinf")), "defReinf": _iforces(r.get("defReinf")),
+		"objectives": r.get("objectives", [0, 0]), "why": String(r.get("why", "")), "retreated": bool(r.get("retreated", false))}
 
 
 static func predict_battle(att_forces: Dictionary, def_forces: Dictionary, mods_a = null, mods_d = null) -> Dictionary:

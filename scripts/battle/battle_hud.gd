@@ -88,6 +88,8 @@ class Overlay extends Control:
 		var lk: float = b.order_lines_alpha()
 		var hs: int = b.sim.hs
 		var counters := []
+		if b.strat != null and b.strat.k > 0.03:
+			_draw_strategic(b, font, b.strat)
 		for e in b.screen_list:
 			var u = e[0]
 			var sp: Vector2 = e[1]
@@ -101,19 +103,15 @@ class Overlay extends Control:
 			var frac: float = clampf(u.hp / u.hp_max, 0.0, 1.0)
 			# pedina tattica a distanza (stile plancia): raccolta e disegnata dopo, raggruppando le vicine
 			if ik > 0.02 and not occ:
-				counters.append({"u": u, "p": sp + Vector2(0, -rad * (1.0 - ik) - 16.0), "a": ik, "n": b.sim.alive(u) if not u.stat else 1,
+				var tk: float = e[8] if e.size() > 8 else ik
+				counters.append({"u": u, "p": sp + Vector2(0, -rad * (1.0 - tk) - 16.0), "a": ik, "z": lerpf(0.78, 1.0, tk), "n": b.sim.alive(u) if not u.stat else 1,
 					"sel": u.sel, "hov": e[3], "hp": frac * float(u.hp_max), "hpm": float(u.hp_max), "conc": conc, "k": 1})
 			var near_a := 1.0 - ik
 			var show_bar: bool = (u.sel or frac < 0.985 or e[3]) and not occ and near_a > 0.15
 			if show_bar:
 				var w := clampf(rad * 1.6, 22.0, 46.0)
 				var p2 := sp + Vector2(-w * 0.5, -rad - 6)
-				draw_rect(Rect2(p2 - Vector2(1, 1), Vector2(w + 2, 5)), Color(0, 0, 0, 0.7 * near_a))
-				var hc := Color(0.35, 0.9, 0.4) if frac > 0.6 else (Color(0.95, 0.8, 0.25) if frac > 0.3 else Color(0.95, 0.3, 0.2))
-				if u.side != hs and hs >= 0:
-					hc = hc.lerp(Color(1, 0.35, 0.3), 0.35)
-				hc.a = near_a
-				draw_rect(Rect2(p2, Vector2(w * frac, 3)), hc)
+				BattleHud.draw_integrity(self, p2, w, 4.0, frac, near_a, u.side != hs and hs >= 0)
 				# indicatore di colpo: lampo sulla barra e segno a croce sull'unità nemica
 				if u.hit_t > 0.0:
 					var ht: float = clampf(u.hit_t / 0.25, 0.0, 1.0)
@@ -199,14 +197,119 @@ class Overlay extends Control:
 				hit["conc"] = hit["conc"] and c["conc"]
 		var hs: int = b.sim.hs
 		var view := Rect2(Vector2.ZERO, size).grow(60.0)
+		# vista strategica: pedine più grandi (leggibili sulla plancia)
+		var sc0: float = 1.0 + 0.45 * (b.strat.k if b.strat != null else 0.0)
 		for m in merged:
 			var u = m["u"]
 			var mp: Vector2 = m["p"]
 			if not mp.is_finite() or not view.has_point(mp):
 				continue
 			var own: bool = hs < 0 or u.side == hs
+			var sc: float = sc0 * float(m.get("z", 1.0))
+			if sc > 1.01:
+				draw_set_transform(mp * (1.0 - sc), 0.0, Vector2(sc, sc))
 			BattleHud.draw_counter(self, font, m["p"], b.side_color(u.side), u.type, int(m["n"]), own, m["sel"], m["hov"], float(m["a"]),
 				clampf(float(m["hp"]) / maxf(1.0, float(m["hpm"])), 0.0, 1.0), m["conc"], u.air)
+			if sc > 1.01:
+				draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	## Vista strategica: frecce di movimento dei gruppi (piene le proprie, tratteggiate le nemiche avvistate) e obiettivi.
+	func _draw_strategic(b, font: Font, st) -> void:
+		var cam: Camera3D = b.cam
+		var a: float = st.k
+		var aa: float = smoothstep(0.35, 0.9, a)   # le frecce compaiono più tardi: in vista operativa coprirebbero le unità
+		for ar in st.arrows:
+			var f: Vector3 = ar["from"]
+			var t: Vector3 = ar["to"]
+			if cam.is_position_behind(f) or cam.is_position_behind(t):
+				continue
+			var p0 := cam.unproject_position(f)
+			var p1 := cam.unproject_position(t)
+			var L := p0.distance_to(p1)
+			if L < 28.0:
+				continue
+			if aa <= 0.01:
+				break
+			var col: Color = b.side_color(ar["side"])
+			var wid := clampf(6.0 + float(ar["n"]) * 1.1, 8.0, 18.0)
+			_arrow(p0, p1, wid, Color(col.lightened(0.15), (0.72 if ar["own"] else 0.45) * aa), Color(0, 0, 0, 0.55 * aa), not ar["own"], ar["atk"])
+		for o in st.objectives:
+			var pos: Vector3 = o["pos"]
+			if cam.is_position_behind(pos):
+				continue
+			var sp := cam.unproject_position(pos)
+			if not Rect2(Vector2.ZERO, size).grow(40.0).has_point(sp):
+				continue
+			var own: int = o["owner"]
+			var fc: Color = Color(0.82, 0.8, 0.72) if own < 0 else b.side_color(own)
+			_flag(sp, fc, a)
+			var txt: String = o["name"]
+			var tw := font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+			var bx := Rect2(sp + Vector2(-tw * 0.5 - 5.0, 6.0), Vector2(tw + 10.0, 17.0))
+			draw_rect(bx, Color(0.07, 0.09, 0.07, 0.78 * a))
+			draw_rect(Rect2(bx.position, Vector2(3.0, bx.size.y)), Color(fc, 0.95 * a))
+			draw_string(font, bx.position + Vector2(5.0, 13.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.95, 0.93, 0.85, a))
+
+	## Freccia larga e leggermente curva da a a b (stile piano di battaglia); `dashed` = solo contorno tratteggiato.
+	func _arrow(p0: Vector2, p1: Vector2, w: float, col: Color, edge: Color, dashed: bool, atk: bool) -> void:
+		var d := (p1 - p0)
+		var L := d.length()
+		var dir := d / L
+		var nrm := Vector2(-dir.y, dir.x)
+		var head := minf(w * 2.4, L * 0.4)
+		var ctrl := (p0 + p1) * 0.5 + nrm * L * 0.12
+		var tip_base := p1 - dir * head
+		var left := PackedVector2Array()
+		var right := PackedVector2Array()
+		var N := 12
+		for i in N + 1:
+			var t := float(i) / N
+			var q := (1.0 - t) * (1.0 - t) * p0 + 2.0 * (1.0 - t) * t * ctrl + t * t * tip_base
+			var tg := (2.0 * (1.0 - t) * (ctrl - p0) + 2.0 * t * (tip_base - ctrl)).normalized()
+			var nn := Vector2(-tg.y, tg.x)
+			var hw := w * 0.5 * lerpf(0.55, 1.0, t)
+			left.append(q + nn * hw)
+			right.append(q - nn * hw)
+		var tg_end := (tip_base - ctrl).normalized()
+		var ne := Vector2(-tg_end.y, tg_end.x)
+		var tip := tip_base + tg_end * head
+		var poly := PackedVector2Array()
+		poly.append_array(left)
+		poly.append(tip_base + ne * w * 1.15)
+		poly.append(tip)
+		poly.append(tip_base - ne * w * 1.15)
+		for i in range(right.size() - 1, -1, -1):
+			poly.append(right[i])
+		var outline := poly.duplicate()
+		outline.append(poly[0])
+		if dashed:
+			draw_colored_polygon(poly, Color(col, col.a * 0.35))
+			for i in range(0, outline.size() - 1, 2):
+				draw_line(outline[i], outline[i + 1], Color(col, minf(1.0, col.a * 1.6)), 2.0)
+		else:
+			# ombra, corpo, contorno
+			var sh := PackedVector2Array()
+			for q in poly:
+				sh.append(q + Vector2(2, 3))
+			draw_colored_polygon(sh, Color(0, 0, 0, edge.a * 0.5))
+			draw_colored_polygon(poly, col)
+			draw_polyline(outline, edge, 1.5)
+		if atk:
+			# attacco: due tacche trasversali vicino alla punta
+			for k in 2:
+				var c := tip_base - tg_end * (6.0 + k * 7.0)
+				draw_line(c + ne * w * 0.7, c - ne * w * 0.7, Color(1, 1, 1, col.a), 2.0)
+
+	## Bandierina dell'obiettivo: asta, drappo nel colore di chi lo controlla, base a disco.
+	func _flag(p: Vector2, col: Color, a: float) -> void:
+		draw_circle(p, 5.0, Color(0, 0, 0, 0.5 * a))
+		draw_circle(p, 3.2, Color(0.92, 0.9, 0.82, a))
+		draw_line(p, p + Vector2(0, -30), Color(0.15, 0.13, 0.1, a), 2.0)
+		var fl := PackedVector2Array([p + Vector2(1, -30), p + Vector2(20, -25), p + Vector2(1, -19)])
+		var sh := PackedVector2Array([p + Vector2(2.5, -28.5), p + Vector2(21.5, -23.5), p + Vector2(2.5, -17.5)])
+		draw_colored_polygon(sh, Color(0, 0, 0, 0.4 * a))
+		draw_colored_polygon(fl, Color(col, a))
+		draw_polyline(PackedVector2Array([fl[0], fl[1], fl[2], fl[0]]), Color(0, 0, 0, 0.6 * a), 1.0)
 
 	## Ultime posizioni note dei nemici non più avvistati: pedina sbiadita con "?" e da quanto tempo.
 	func _draw_ghosts(b, font: Font) -> void:
@@ -419,12 +522,42 @@ static func draw_counter(ci: CanvasItem, font: Font, p: Vector2, col: Color, t: 
 		ci.draw_rect(tr, Color(edge, a * 0.8), false, 1.0)
 		ci.draw_string(font, tr.position + Vector2(3, 10.5), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 1, 1, a))
 	# integrità
-	var bw := hw * 2.0
-	ci.draw_rect(Rect2(p + Vector2(-hw, hh + 2), Vector2(bw, 3)), Color(0, 0, 0, 0.7 * a))
-	var hc := Color(0.35, 0.9, 0.4) if frac > 0.6 else (Color(0.95, 0.8, 0.25) if frac > 0.3 else Color(0.95, 0.3, 0.2))
-	ci.draw_rect(Rect2(p + Vector2(-hw, hh + 2), Vector2(bw * frac, 3)), Color(hc, a))
+	draw_integrity(ci, p + Vector2(-hw, hh + 2), hw * 2.0, 4.0, frac, a, false)
 	if conc:
 		draw_glyph(ci, "leaf", p + Vector2(-hw - 7, -hh + 3), 12.0, Color(0.6, 1.0, 0.55, a))
+
+## Barra d'integrità unica per tutta la battaglia: fondo scuro, riempimento verde/ambra/rosso, tacche ogni 25%
+## (si legge la quantità anche da lontano), bordo sottile. `enemy` = tinta leggermente rossa.
+static func draw_integrity(ci: CanvasItem, p: Vector2, w: float, h: float, frac: float, a: float, enemy: bool) -> void:
+	ci.draw_rect(Rect2(p - Vector2(1, 1), Vector2(w + 2, h + 2)), Color(0.02, 0.03, 0.02, 0.8 * a))
+	var hc := Color(0.42, 0.86, 0.38) if frac > 0.6 else (Color(0.96, 0.74, 0.22) if frac > 0.3 else Color(0.94, 0.28, 0.18))
+	if enemy:
+		hc = hc.lerp(Color(1, 0.35, 0.3), 0.3)
+	ci.draw_rect(Rect2(p, Vector2(w * clampf(frac, 0.0, 1.0), h)), Color(hc, a))
+	ci.draw_rect(Rect2(p, Vector2(w * clampf(frac, 0.0, 1.0), 1.0)), Color(1, 1, 1, 0.3 * a))
+	for k in range(1, 4):
+		var x := p.x + w * k / 4.0
+		ci.draw_line(Vector2(x, p.y), Vector2(x, p.y + h), Color(0.02, 0.03, 0.02, 0.85 * a), 1.0)
+
+## Cornice "da tavolo di comando": angoli a L color ambra attorno a un pannello (figlio del pannello, disegna fuori).
+class Brackets extends Control:
+	var pad := Vector2.ZERO
+	var col := Color(0.95, 0.7, 0.24, 0.75)
+	func _init(padding := Vector2.ZERO) -> void:
+		pad = padding
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_preset(Control.PRESET_FULL_RECT)
+	func _draw() -> void:
+		var r := Rect2(-pad - Vector2(2, 2), size + pad * 2.0 + Vector2(4, 4))
+		var L := 11.0
+		var w := 2.0
+		for c in [[r.position, Vector2(1, 1)], [Vector2(r.end.x, r.position.y), Vector2(-1, 1)], [r.end, Vector2(-1, -1)], [Vector2(r.position.x, r.end.y), Vector2(1, -1)]]:
+			var o: Vector2 = c[0]
+			var d: Vector2 = c[1]
+			draw_line(o, o + Vector2(L * d.x, 0), col, w)
+			draw_line(o, o + Vector2(0, L * d.y), col, w)
+		# tacca centrale in alto (righello)
+		draw_line(Vector2(r.get_center().x - 6, r.position.y), Vector2(r.get_center().x + 6, r.position.y), Color(col, col.a * 0.6), 1.0)
 
 ## Fantasma: ultima posizione nota di un nemico (cornice tratteggiata, "?" ed età).
 static func draw_ghost(ci: CanvasItem, font: Font, p: Vector2, col: Color, t: String, n: int, a: float, age: float) -> void:
@@ -614,7 +747,7 @@ static func _sb(bg: Color, edge: Color, r := 5, pad := 8) -> StyleBoxFlat:
 	s.bg_color = bg
 	s.border_color = edge
 	s.set_border_width_all(1)
-	s.set_corner_radius_all(r)
+	s.set_corner_radius_all(mini(r, 3))   # Fase 5: angoli quasi vivi, stile strumentazione
 	s.content_margin_left = pad; s.content_margin_right = pad
 	s.content_margin_top = pad * 0.6; s.content_margin_bottom = pad * 0.6
 	s.shadow_color = Color(0, 0, 0, 0.35)
@@ -663,6 +796,7 @@ func _build_top() -> void:
 	_anchor(top, Control.PRESET_CENTER_TOP, -470, 8, 470, 90)
 	top.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(top)
+	top.add_child(Brackets.new(Vector2(12, 7.2)))
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 18)
 	top.add_child(row)
@@ -737,6 +871,122 @@ func _build_top() -> void:
 	lbl_title.text = String(st.get("terrName", "Battaglia")).to_upper()
 	var tname := String(Data.TERRAINS[battle.sim.tkey]["name"])
 	lbl_sub.text = tname + (" · costa" if battle.sim.sea else "") + ((" · " + battle.mood_text) if battle.mood_text != "" else "")
+	lbl_time.tooltip_text = "Tempo rimanente: allo scadere dei %d minuti decide chi tiene più obiettivi (parità: il difensore)." % int(BattleRules.BATTLE_T / 60.0)
+	# bonus del comando diretto, scritto (docs/omogeneita.md §3)
+	for i in 2:
+		var S: Dictionary = battle.sim.sides[i]
+		if bool(S.get("manual", false)) and battle.sim.hs == i:
+			var extra := _label("Comando diretto: +10% attacco · esperienza doppia", 11, Color(0.75, 0.95, 0.7))
+			extra.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if i == 1 else HORIZONTAL_ALIGNMENT_LEFT
+			side_box[i]["count"].get_parent().add_child(extra)
+	_build_objectives()
+
+## Riquadro degli obiettivi (sotto il pannello in alto): una riga per obiettivo con chi lo tiene e il contatore di conquista.
+var obj_panel: PanelContainer
+var obj_rows: Array = []   # [{dot: ColorRect, name: Label, bar: ProgressBar, state: Label}]
+var obj_hint: Label
+
+func _build_objectives() -> void:
+	var objs: Array = battle.sim.objectives
+	if objs.is_empty():
+		return
+	obj_panel = PanelContainer.new()
+	obj_panel.add_theme_stylebox_override("panel", _sb(BG, EDGE, 6, 10))
+	_anchor(obj_panel, Control.PRESET_CENTER_TOP, -250, 96, 250, 96 + 26 + objs.size() * 20)
+	obj_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	obj_panel.tooltip_text = "Obiettivi: tieni unità di terra nel raggio senza nemici per %d s per conquistarne uno.\nAllo scadere del tempo vince l'attaccante se ne tiene più del difensore." % int(BattleRules.OBJ_HOLD)
+	root.add_child(obj_panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	obj_panel.add_child(v)
+	var hdr := HBoxContainer.new()
+	var t := _label("OBIETTIVI", 12, Color(0.95, 0.85, 0.45), true)
+	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(t)
+	obj_hint = _label("", 11, DIM)
+	obj_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	hdr.add_child(obj_hint)
+	v.add_child(hdr)
+	for o in objs:
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 6)
+		var dot := ColorRect.new()
+		dot.custom_minimum_size = Vector2(10, 10)
+		dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		h.add_child(dot)
+		var nm := _label(String(o["name"]), 12, TXT)
+		nm.custom_minimum_size.x = 150
+		h.add_child(nm)
+		var bar := ProgressBar.new()
+		bar.show_percentage = false
+		bar.custom_minimum_size = Vector2(140, 7)
+		bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		bar.max_value = 1.0
+		bar.step = 0.01
+		var bgs := StyleBoxFlat.new()
+		bgs.bg_color = Color(0, 0, 0, 0.5)
+		bgs.set_corner_radius_all(3)
+		bar.add_theme_stylebox_override("background", bgs)
+		var fill := StyleBoxFlat.new()
+		fill.bg_color = Color(0.9, 0.8, 0.4)
+		fill.set_corner_radius_all(3)
+		bar.add_theme_stylebox_override("fill", fill)
+		h.add_child(bar)
+		var stt := _label("", 11, DIM)
+		stt.custom_minimum_size.x = 120
+		stt.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		h.add_child(stt)
+		v.add_child(h)
+		obj_rows.append({"dot": dot, "name": nm, "bar": bar, "state": stt, "fill": fill})
+
+func _refresh_objectives() -> void:
+	if obj_panel == null:
+		return
+	var sim: BattleSim = battle.sim
+	var objs: Array = sim.objectives
+	var hs := sim.hs
+	for i in mini(objs.size(), obj_rows.size()):
+		var o: Dictionary = objs[i]
+		var r: Dictionary = obj_rows[i]
+		var own: int = int(o["owner"])
+		(r["dot"] as ColorRect).color = Color(0.82, 0.8, 0.72) if own < 0 else battle.side_color(own)
+		var hold: Array = o["hold"]
+		var taking := 0 if float(hold[0]) > 0.0 else (1 if float(hold[1]) > 0.0 else -1)
+		var bar: ProgressBar = r["bar"]
+		var txt := ""
+		if bool(o["contested"]):
+			txt = "conteso"
+			bar.value = 0.0
+		elif taking >= 0:
+			bar.value = clampf(float(hold[taking]) / BattleRules.OBJ_HOLD, 0.0, 1.0)
+			(r["fill"] as StyleBoxFlat).bg_color = battle.side_color(taking).lightened(0.2)
+			txt = ("conquista in %ds" % ceili(BattleRules.OBJ_HOLD - float(hold[taking])))
+			if hs >= 0:
+				txt = ("tuo tra %ds" if taking == hs else "perso tra %ds") % ceili(BattleRules.OBJ_HOLD - float(hold[taking]))
+		else:
+			bar.value = 0.0
+			if own < 0:
+				txt = "neutro"
+			elif hs >= 0:
+				txt = "tenuto da te" if own == hs else "tenuto dal nemico"
+			else:
+				txt = "attaccante" if own == 0 else "difensore"
+		(r["state"] as Label).text = txt
+	var held := sim.objectives_held()
+	var left := maxf(0.0, BattleRules.BATTLE_T - sim.time)
+	var eta0 := sim.reinf_eta(0)
+	var eta1 := sim.reinf_eta(1)
+	var hint := "%d · %d" % [held[0], held[1]]
+	if hs >= 0:
+		var mine_eta := eta0 if hs == 0 else eta1
+		var en_eta := eta1 if hs == 0 else eta0
+		if mine_eta >= 0.0:
+			hint = "rinforzi tra %ds · " % ceili(mine_eta) + hint
+		elif en_eta >= 0.0:
+			hint = "rinforzi nemici tra %ds · " % ceili(en_eta) + hint
+	if sim.ending == null and left < 60.0:
+		hint = "allo scadere decidono gli obiettivi · " + hint
+	obj_hint.text = hint
 	pause_lbl = _label("PAUSA", 34, Color(1, 0.82, 0.25))
 	_anchor(pause_lbl, Control.PRESET_CENTER_TOP, -200, 118, 200, 160)
 	pause_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -755,6 +1005,7 @@ func _build_bottom() -> void:
 	_anchor(sel_panel, Control.PRESET_BOTTOM_LEFT, 10, -206 if hs >= 0 else -118, 790, -10)
 	sel_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(sel_panel)
+	sel_panel.add_child(Brackets.new(Vector2(12, 7.2)))
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 5)
 	sel_panel.add_child(v)
@@ -795,13 +1046,14 @@ func _build_bottom() -> void:
 	_btn(btn_row, "auto", "Risolvi in automatico", "Calcola il resto dello scontro in base alla forza rimasta\n(le perdite subite finora restano).", "auto")
 	_btn(btn_row, "photo", "Foto  (F10)", "Modalità foto (F10): mette in pausa, nasconde l'interfaccia e libera la telecamera.\nWASD muove, Q/E quota, tasto destro + mouse guarda, rotella zoom.\nInvio scatta e salva un PNG nella cartella utente del gioco; Esc esce.", "")
 	if hs == 0:
-		_btn(btn_row, "retreat", "Ritirata", "Ritirata ordinata: le forze superstiti ripiegano\ne il territorio resta al difensore.", "retreat")
+		_btn(btn_row, "retreat", "Ritirata", "Ritirata ordinata: i reparti ripiegano verso il tuo bordo del campo.\nChi lo raggiunge è salvo e torna a casa; chi resta combatte.\nIl territorio resta al difensore.", "retreat")
 	# minimappa (in basso a destra)
 	minimap = Minimap.new()
 	minimap.hud = self
 	_anchor(minimap, Control.PRESET_BOTTOM_RIGHT, -330, -196, -10, -16)
 	root.add_child(minimap)
 	minimap.setup()
+	minimap.add_child(Brackets.new(Vector2(0, 0)))
 	var mm_lbl := _label("Minimappa · clic: sposta la vista · destro: muovi", 11, DIM)
 	_anchor(mm_lbl, Control.PRESET_BOTTOM_RIGHT, -330, -15, -10, 0)
 	mm_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1148,8 +1400,10 @@ func refresh() -> void:
 		if int(S["support"]) > 0:
 			t += " · supporto art. %d" % int(S["support"])
 		sb["count"].text = t
-	var tt := int(sim.time)
+	var tt := int(ceil(maxf(0.0, BattleRules.BATTLE_T - sim.time)))   # conto alla rovescia (docs/omogeneita.md §1)
 	lbl_time.text = "%02d:%02d" % [tt / 60, tt % 60]
+	lbl_time.add_theme_color_override("font_color", Color(1.0, 0.45, 0.35) if (tt <= 60 and sim.ending == null) else Color(0.95, 0.85, 0.45))
+	_refresh_objectives()
 	pause_lbl.visible = sim.paused and sim.ending == null and not battle.deploying
 	var hs := sim.hs
 	var ended: bool = sim.ending != null or sim.done
@@ -1162,6 +1416,9 @@ func refresh() -> void:
 	for id in ["auto", "retreat", "all"]:
 		if buttons.has(id):
 			buttons[id].disabled = ended
+	if buttons.has("retreat") and sim.retreating[0]:
+		buttons["retreat"].disabled = true
+		buttons["retreat"].text = "In ritirata…"
 	var sel_l: Array = sim.sel_alive() if hs >= 0 else []
 	var nosel := sel_l.is_empty()
 	for id in ["amove", "stop", "hold"]:
@@ -1239,14 +1496,17 @@ func _set_cmd(id: String, cd: float, on: bool) -> void:
 func _stall_text(sim: BattleSim, ended: bool) -> String:
 	if ended or sim.hs < 0 or sim.paused or battle.deploying:
 		return ""
+	if sim.retreating[sim.hs]:
+		return "RITIRATA IN CORSO — i reparti che raggiungono il tuo bordo si salvano"
 	var left: float = BattleSim.NO_DMG_HUMAN - (sim.time - sim.last_dmg)
 	if left > 45.0:
 		return ""
+	var objs: bool = not sim.objectives.is_empty()
 	if sim.hs == 0:
-		return "NESSUN CONTATTO — attacca entro %d s o l'offensiva fallisce (stallo)" % ceili(maxf(0.0, left))
-	return "Il nemico non attacca — tieni la posizione: vittoria per stallo tra %d s" % ceili(maxf(0.0, left))
+		return "NESSUN CONTATTO — attacca entro %d s o l'offensiva fallisce (%s)" % [ceili(maxf(0.0, left)), "decidono gli obiettivi" if objs else "stallo"]
+	return "Il nemico non attacca — tieni la posizione: %s tra %d s" % ["decidono gli obiettivi" if objs else "vittoria per stallo", ceili(maxf(0.0, left))]
 
-const HELP_CAM :="WASD/frecce/bordi: sposta · Q/E: ruota · rotella: zoom (fino alla vista d'insieme) · Home: torna all'esercito · F10: modalità foto"
+const HELP_CAM :="WASD/frecce/bordi: sposta · Q/E: ruota · rotella: zoom (fino alla vista strategica) · Tab: vista strategica/tattica · Home: torna all'esercito · F10: modalità foto"
 
 ## Suggerimento tattico per tipo d'unità (pannello di selezione).
 const HINTS := {

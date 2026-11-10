@@ -23,6 +23,10 @@ var _mis: Array = []     # razzi {a, b, t, T, side}
 var _im: ImmediateMesh
 var _imi: MeshInstance3D
 var _lights: Array = []
+var _smm_inst: MultiMeshInstance3D
+var _smolders: Array = []    # crateri/relitti che fumano a lungo: [pos, tempo rimasto, intervallo, prossimo sbuffo, forza]
+const SMOLDER_MAX := 28
+var detail := 1.0            # qualità degli effetti nuovi (alto 1, medio 0.7, basso 0.45): numero di sbuffi e fumo persistente
 var _li := 0
 var wind := Vector3(1.2, 0, 0.4)
 var dust_color := Color(0.5, 0.45, 0.35)
@@ -33,10 +37,13 @@ var snowy := 0.0              # 0..1 neve a terra: la polvere diventa neve solle
 const GLOW_SHADER := """
 shader_type spatial;
 render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
+uniform sampler2D depth_tex : hint_depth_texture, filter_linear;
 varying vec4 cus;
 varying vec4 col;
+varying float size;
 void vertex() {
 	float s = length(MODEL_MATRIX[0].xyz);
+	size = s;
 	vec3 c = MODEL_MATRIX[3].xyz;
 	float r = INSTANCE_CUSTOM.z * 6.2831;
 	vec2 v = mat2(vec2(cos(r), sin(r)), vec2(-sin(r), cos(r))) * VERTEX.xy;
@@ -57,8 +64,13 @@ void fragment() {
 	} else {
 		a *= 1.0 - age;
 	}
+	// sfumatura contro la scena (alberi, tetti, terreno): niente tagli netti dei quad grandi
+	float d = texture(depth_tex, SCREEN_UV).r;
+	vec4 vv = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, d, 1.0);
+	vv.xyz /= vv.w;
+	float soft = clamp((VERTEX.z - vv.z) / max(0.4, size * 0.45), 0.0, 1.0);
 	ALBEDO = c * 3.0;
-	ALPHA = clamp(a * col.a, 0.0, 1.0);
+	ALPHA = clamp(a * col.a * soft, 0.0, 1.0);
 }
 """
 
@@ -87,11 +99,16 @@ void vertex() {
 void fragment() {
 	vec2 uv = UV * 2.0 - 1.0;
 	float r = length(uv);
-	float n = texture(noise_tex, UV * 0.45 + vec2(cus.z * 7.0, cus.z * 3.0)).r;
-	float n2 = texture(noise_tex, UV * 1.1 + vec2(cus.z * 5.0, 0.3)).r;
-	float a = 1.0 - smoothstep(0.35, 1.0, r + (n - 0.5) * 0.7 + (n2 - 0.5) * 0.25);
 	float age = cus.x;
 	float kind = cus.y;
+	// rumore animato: due strati che scorrono e si deformano con l'età (effetto "ribollire" senza flipbook)
+	vec2 flow = vec2(age * 0.22, -age * 0.35);
+	vec2 warp = (texture(noise_tex, UV * 0.6 + vec2(cus.z * 3.0, age * 0.15)).rg - 0.5) * 0.25;
+	float n = texture(noise_tex, UV * 0.45 + warp + vec2(cus.z * 7.0, cus.z * 3.0) + flow).r;
+	float n2 = texture(noise_tex, UV * 1.3 - warp + vec2(cus.z * 5.0, 0.3) - flow * 1.6).r;
+	float a = 1.0 - smoothstep(0.3, 1.0, r + (n - 0.5) * 0.8 + (n2 - 0.5) * 0.35);
+	// bordi più "a ciuffi" con l'età: il fumo si sfilaccia
+	a *= mix(1.0, smoothstep(0.25, 0.65, n2 + 0.2), smoothstep(0.3, 1.0, age) * 0.6);
 	if (kind > 2.5) {
 		a = step(r, 0.55 + (n - 0.5) * 0.4);
 	} else {
@@ -101,12 +118,17 @@ void fragment() {
 	vec4 ndc = vec4(SCREEN_UV * 2.0 - 1.0, d, 1.0);
 	vec4 vv = INV_PROJECTION_MATRIX * ndc;
 	vv.xyz /= vv.w;
-	float soft = clamp((VERTEX.z - vv.z) / max(0.3, size * 0.35), 0.0, 1.0);
+	float soft = clamp((VERTEX.z - vv.z) / max(0.6, size * 0.6), 0.0, 1.0);
+	soft *= soft * (3.0 - 2.0 * soft);
+	// vicino alla telecamera: dissolvenza (niente quad che riempiono lo schermo)
+	soft *= smoothstep(size * 0.4, size * 1.4 + 1.0, -VERTEX.z);
 	// illuminazione finta: lato superiore verso il sole più chiaro
 	vec3 nv = normalize(vec3(uv.x, -uv.y, 0.6));
 	vec3 nw = normalize((INV_VIEW_MATRIX * vec4(nv, 0.0)).xyz);
 	float lit = clamp(dot(nw, normalize(sun_dir)) * 0.5 + 0.5, 0.0, 1.0);
-	vec3 c = col.rgb * (amb_col * 0.75 + light_col * lit * 0.6) * (0.85 + 0.3 * n2);
+	// luce della scena (sole e ambiente dell'ora del giorno), controluce leggero sui bordi sottili
+	vec3 c = col.rgb * (amb_col * 0.8 + light_col * lit * 0.65) * (0.82 + 0.36 * n2);
+	c += light_col * col.rgb * (1.0 - a) * 0.25 * lit;
 	if (kind > 1.5 && kind < 2.5) {
 		// fumo nero con base infuocata nei primi istanti
 		c = mix(c + vec3(0.9, 0.35, 0.05) * (1.0 - smoothstep(0.0, 0.18, age)), c, smoothstep(0.0, 0.18, age));
@@ -144,6 +166,7 @@ func setup(cam: Camera3D, noise_tex: Texture2D, sun_dir: Vector3) -> void:
 	sm.render_priority = 0
 	gm.render_priority = 1
 	_smm = _mk_mm(quad, sm, SMOKE_N, "Smoke")
+	_smm_inst = get_node("Smoke") as MultiMeshInstance3D
 	_gmm = _mk_mm(quad, gm, GLOW_N, "Glow")
 	_im = ImmediateMesh.new()
 	_imi = MeshInstance3D.new()
@@ -165,6 +188,14 @@ func setup(cam: Camera3D, noise_tex: Texture2D, sun_dir: Vector3) -> void:
 		l.visible = false
 		add_child(l)
 		_lights.append([l, 0.0, 0.0, 0.0])
+
+## Luce del fumo coerente con l'ora del giorno: colore/energia del sole e luce ambiente della scena.
+func set_lighting(sun_col: Color, sun_e: float, amb: Color) -> void:
+	if _smm_inst == null:
+		return
+	var m := _smm_inst.material_override as ShaderMaterial
+	m.set_shader_parameter("light_col", Vector3(sun_col.r, sun_col.g, sun_col.b) * clampf(sun_e, 0.2, 1.4))
+	m.set_shader_parameter("amb_col", Vector3(amb.r, amb.g, amb.b))
 
 func _mk_mm(mesh: Mesh, mat: Material, n: int, nm: String) -> MultiMesh:
 	var mm := MultiMesh.new()
@@ -236,14 +267,15 @@ func flak(p: Vector3) -> void:
 
 func explosion(p: Vector3, s: float, ground: bool) -> void:
 	# lampo centrale ampio e palla di fuoco che si gonfia (Fase 8: più grande e più luminosa)
-	_glow(p + Vector3(0, 0.6 * s, 0), Vector3.ZERO, 0.14, 8.0 * s, 1.8, 0, Color(1.0, 0.92, 0.75))
+	_glow(p + Vector3(0, 0.6 * s, 0), Vector3.ZERO, 0.14, 6.0 * s, 1.5, 0, Color(1.0, 0.92, 0.75))
 	_glow(p + Vector3(0, 1.2 * s, 0), Vector3(0, 3.0 * s, 0), 0.5, 3.2 * s, 2.0, 1, Color(1.0, 0.7, 0.3), 1.5)
 	for i in int(5 + 6 * s):
 		_glow(p + _rv(1.3 * s) + Vector3(0, s, 0), _rv(5.5 * s) + Vector3(0, 4.5 * s, 0), 0.35 + randf() * 0.4, (1.8 + randf() * 1.8) * s, 1.5, 1, Color(1.0, 0.62, 0.22), 2.5)
 	for i in int(8 + 10 * s):
 		_glow(p + Vector3(0, 0.4, 0), _rv(18.0 * s) + Vector3(0, 11.0 * s, 0), 0.4 + randf() * 0.7, 0.25, 0.0, 2, Color(1.0, 0.7, 0.3), 0.6, 16.0)
-	for i in int(4 + 5 * s):
-		_smoke(p + _rv(1.0 * s) + Vector3(0, 0.8 * s, 0), _rv(2.2 * s) + Vector3(0, 3.0 + randf() * 3.5 * s, 0), 3.0 + randf() * 3.0, (2.2 + randf() * 1.8) * s, 2.6, 2, Color(0.16, 0.14, 0.13, 0.85), 1.0)
+	# fungo: molti sbuffi più piccoli invece di pochi piani grandi (si leggono come volume)
+	for i in int((7 + 8 * s) * lerpf(0.6, 1.0, detail)):
+		_smoke(p + _rv(1.2 * s) + Vector3(0, (0.6 + randf() * 1.2) * s, 0), _rv(2.6 * s) + Vector3(0, 2.5 + randf() * 4.5 * s, 0), 2.6 + randf() * 3.2, (1.3 + randf() * 1.3) * s, 2.8, 2, Color(0.16, 0.14, 0.13, 0.8), 1.0)
 	if ground:
 		var dc := _ground_dust()
 		for i in int(5 + 6 * s):
@@ -252,6 +284,14 @@ func explosion(p: Vector3, s: float, ground: bool) -> void:
 			_smoke(p + Vector3(0, 0.4, 0), v, 1.8 + randf() * 1.5, (1.8 + randf()) * s, 2.0, 1, Color(dc, 0.7), 2.2)
 		for i in int(5 + 7 * s):
 			_smoke(p + Vector3(0, 0.3, 0), _rv(8.0 * s) + Vector3(0, 10.0 * s + randf() * 7.0, 0), 1.0 + randf() * 0.7, 0.25 + randf() * 0.3, 0.0, 3, Color(0.12, 0.1, 0.08, 1.0) if wet < 0.5 else Color(0.2, 0.17, 0.12, 1.0), 0.3, 18.0)
+		# zolle e sassi più grossi, lenti a ricadere: danno peso al colpo
+		for i in int((2 + 3 * s) * detail):
+			_smoke(p + Vector3(0, 0.4, 0), _rv(5.0 * s) + Vector3(0, 7.0 * s + randf() * 5.0, 0), 1.3 + randf() * 0.6, 0.5 + randf() * 0.45, 0.0, 3, Color(0.17, 0.14, 0.1, 1.0), 0.15, 15.0)
+		# foschia bassa che resta sul campo e scivola col vento
+		for i in (2 if detail > 0.6 else 1):
+			_smoke(p + _rv(2.0 * s) + Vector3(0, 1.0, 0), wind * 0.3 + Vector3(0, 0.15, 0), 14.0 + randf() * 8.0, (3.5 + randf() * 2.0) * s, 1.6, 0, Color(dc.lerp(Color(0.5, 0.5, 0.5), 0.5), 0.22), 0.6)
+		if s >= 0.9:
+			smolder(p, 22.0 + randf() * 14.0, clampf(s * 0.6, 0.4, 1.0))
 	light(p + Vector3(0, 2.0 + s, 0), 9.0 * s, 16.0 + 12.0 * s, 0.34)
 
 ## Colore della polvere sollevata secondo il suolo del momento: fango con la pioggia, neve nell'artico/nevicata.
@@ -298,6 +338,29 @@ func tree_fall(p: Vector3, s := 1.0) -> void:
 	for i in 5:
 		_smoke(p + Vector3(0, 1.5 + randf() * 3.0, 0), _rv(2.5) + Vector3(0, 1.0, 0), 1.0 + randf() * 0.8, 0.16, 0.0, 3, Color(0.25, 0.36, 0.14, 1.0), 0.8, 4.0)
 
+## Cratere o relitto che continua a fumare: un filo di fumo grigio che sale e si piega col vento (max SMOLDER_MAX attivi).
+func smolder(p: Vector3, dur: float, k := 0.6) -> void:
+	if _smolders.size() >= int(SMOLDER_MAX * detail):
+		_smolders.pop_front()
+	_smolders.append([p, dur, lerpf(1.6, 0.7, k), randf() * 0.5, k])
+
+func _update_smolders(dt: float) -> void:
+	var i := 0
+	while i < _smolders.size():
+		var S: Array = _smolders[i]
+		S[1] -= dt
+		if S[1] <= 0.0:
+			_smolders.remove_at(i)
+			continue
+		S[3] -= dt
+		if S[3] <= 0.0:
+			var fade: float = clampf(S[1] / 8.0, 0.0, 1.0)
+			S[3] = S[2] * (0.8 + randf() * 0.4) / maxf(0.4, detail)
+			var k: float = S[4]
+			_smoke(S[0] + _rv(0.8) + Vector3(0, 0.4, 0), Vector3(0, 1.4 + randf() * 0.8, 0) + wind * 0.35, 6.0 + randf() * 3.0,
+				(0.9 + randf() * 0.6) * (0.7 + k), 3.2, 0, Color(0.3, 0.29, 0.28, (0.35 + 0.2 * k) * fade), 0.5)
+		i += 1
+
 func burn(p: Vector3, strength: float) -> void:
 	# fumo da relitto: denso e scuro all'inizio, poi più leggero
 	var c := Color(0.13, 0.12, 0.11, 0.8).lerp(Color(0.32, 0.31, 0.3, 0.55), 1.0 - strength)
@@ -331,6 +394,31 @@ func dust(p: Vector3, s := 1.0) -> void:
 		return
 	_smoke(p, _rv(0.6) + Vector3(0, 0.5, 0), 1.2 + randf() * 0.8, s, 1.8, 1, Color(_ground_dust(), 0.35), 1.5)
 
+## Vampa a terra del cannone: anello di polvere schiacciata davanti alla bocca (dà "peso" allo sparo).
+func blast_dust(g: Vector3, dir: Vector3, s := 1.0) -> void:
+	if wet > 0.5 or snowy > 0.5:
+		dust(g, s)
+		return
+	var dc := _ground_dust()
+	for i in int(4 + 2 * s):
+		var a := randf() * TAU
+		var v := (Vector3(cos(a), 0.0, sin(a)) * 0.6 + dir * 0.8).normalized() * (5.0 + randf() * 5.0) * s
+		v.y = 0.4 + randf() * 0.6
+		_smoke(g + Vector3(0, 0.3, 0), v, 1.2 + randf() * 0.8, (1.0 + randf() * 0.6) * s, 2.4, 1, Color(dc, 0.5), 2.6)
+
+## Polvere sotto i cingoli: due sbuffi bassi ai lati, che restano un po' e scivolano col vento.
+func track_dust(l: Vector3, r: Vector3, s := 1.0) -> void:
+	if wet > 0.5:
+		mud_splash(l, s * 0.7)
+		return
+	if snowy > 0.5:
+		snow_spray(l, s * 0.8)
+		snow_spray(r, s * 0.8)
+		return
+	var dc := _ground_dust()
+	for q in ([l, r] if detail > 0.5 else [l.lerp(r, 0.5)]):
+		_smoke(q + Vector3(0, 0.25, 0), _rv(0.5) + Vector3(0, 0.35, 0) + wind * 0.2, 1.6 + randf() * 1.2, (0.9 + randf() * 0.4) * s, 2.2, 1, Color(dc, 0.32), 1.4)
+
 func light(p: Vector3, energy: float, rng: float, dur: float) -> void:
 	var L: Array = _lights[_li]
 	_li = (_li + 1) % _lights.size()
@@ -358,6 +446,7 @@ func update(dt: float, paused: bool) -> void:
 	if not paused:
 		_sim(_g, _gc, dt, true)
 		_sim(_s, _sc, dt, false)
+		_update_smolders(dt)
 		for L in _lights:
 			if L[1] > 0:
 				L[1] -= dt
@@ -388,8 +477,8 @@ func _sim(A: PackedFloat32Array, C: PackedColorArray, dt: float, glow: bool) -> 
 		A[o + 3] *= dr; A[o + 4] *= dr; A[o + 5] *= dr
 		A[o + 4] -= A[o + 13] * dt
 		if not glow and int(A[o + 10]) != 3:
-			A[o + 3] += wind.x * dt * 0.5
-			A[o + 5] += wind.z * dt * 0.5
+			A[o + 3] += wind.x * dt * 0.8
+			A[o + 5] += wind.z * dt * 0.8
 			A[o + 4] += 0.25 * dt
 		A[o] += A[o + 3] * dt; A[o + 1] += A[o + 4] * dt; A[o + 2] += A[o + 5] * dt
 		if int(A[o + 10]) == 3 and A[o + 1] < -50:

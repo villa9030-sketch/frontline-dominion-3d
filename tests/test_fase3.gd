@@ -613,6 +613,7 @@ func test_serialization() -> void:
 	old.erase("pact_cd")
 	old.erase("aggr")
 	old["opts"].erase("fog")
+	old["opts"].erase("fog_mode")
 	for t in old["terr"]:
 		t.erase("vet")
 		t.erase("xp")

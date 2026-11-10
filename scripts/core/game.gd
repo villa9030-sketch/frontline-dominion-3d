@@ -69,7 +69,8 @@ var _battle_times: Array = []   # [time, continente] delle battaglie recenti
 var _hot_at := {}               # continente -> tempo dell'ultimo "fronte caldo"
 var _ctx_dirty := false
 
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3          # v3: logoramento (terr.worn), carte inganno (decoy/silence/intel), nebbia a tre modalità
+const SAVE_MIN_VERSION := 2      # i salvataggi v2 (turni) si caricano con migrazione
 const ROUND_CAP := 120          # partite normali: al limite vince chi controlla più territori
 const REINFORCE_DIV := 2.0     # rinforzi per turno = territori / 2 (min 4) + bonus dei continenti
 const ANIM_DUR := 1.2           # s reali di animazione di uno spostamento/attacco
@@ -95,7 +96,9 @@ const PACT_AGGR_WINDOW := 1         # round: niente patto se il proponente ha at
 const RADAR_FACTION := "aan"        # fazione con il radar (+1 anello di visibilità)
 
 ## Nebbia di guerra (opts.fog)
-var fog := false
+var fog := false                # true con nebbia leggera o totale (compatibilità)
+var fog_mode := "none"          # "none" | "light" | "full" (docs/omogeneita.md §5)
+var intel := {}                 # "p:t" -> round fino al quale p vede esattamente t (ricognizione)
 var _vis_cache := {}            # viewer -> PackedByteArray
 ## Patti di non aggressione: [{a, b, until}] e offerte delle IA al giocatore: [{from, to, until}]
 var pacts: Array = []
@@ -160,12 +163,20 @@ func _init(o: Dictionary = {}) -> void:
 		"ask_defense": bool(o.get("ask_defense", true)),
 		"auto_battles": bool(o.get("auto_battles", false)),
 		"fog": bool(o.get("fog", false)),
+		"fog_mode": "",
 		"scenario": scen_id,
 		"ai_step_delay": maxf(0.0, _num(o.get("ai_step_delay", 0.8))),
 	}
+	# nebbia: opts.fog_mode ("none"/"light"/"full") ha la precedenza; il vecchio bool fog = totale/nessuna
+	var fm := str(o.get("fog_mode", "")) if o.get("fog_mode") != null else ""
+	if not Data.FOG_MODES.has(fm):
+		fm = "full" if bool(o.get("fog", false)) else "none"
+	opts["fog_mode"] = fm
+	opts["fog"] = fm != "none"
 	mode = opts["mode"]
 	ai_step_delay = float(opts["ai_step_delay"])
-	fog = opts["fog"]
+	fog_mode = fm
+	fog = fm != "none"
 	rng.seed = seed_v
 
 	for i in pl.size():
@@ -202,6 +213,7 @@ func _init(o: Dictionary = {}) -> void:
 			"idx": i, "owner": -1, "forces": Data.empty_forces(), "buildings": [], "building": null, "queue": [],
 			"sabotage": 0.0, "unrest": 0.0, "regroup": 0.0, "supplied": true, "garrison_t": 0.0,
 			"vet": 0, "xp": 0, "fresh": 0, "fort": {"trench": 0, "mines": 0, "bunker": 0},
+			"worn": 0, "decoy": 0, "silence": 0,
 		})
 
 	var R: Dictionary = scenario.get("rules", {}) if scenario != null else {}
@@ -997,11 +1009,16 @@ func travel_time(p: int, from: int, to: int, forces = null) -> float:
 	return maxf(MIN_TRAVEL, t)
 
 
-## null se nascoste (UL in territorio urbano) o fuori vista (nebbia di guerra)
+## null se nascoste (UL in territorio urbano), fuori vista (nebbia di guerra), sotto divisione falsa o silenzio radio.
+## La ricognizione (carta) mostra sempre le forze esatte.
 func visible_forces(viewer: int, t: int):
 	var tr: Dictionary = terr[t]
 	if viewer < 0 or tr["owner"] == viewer:
 		return Data.clone_forces(tr["forces"])
+	if has_intel(viewer, t):
+		return Data.clone_forces(tr["forces"])
+	if tr["owner"] >= 0 and (int(tr.get("silence", 0)) > 0 or int(tr.get("decoy", 0)) > 0):
+		return null
 	if fog and not is_visible(viewer, t):
 		return null
 	if tr["owner"] < 0:
@@ -1009,6 +1026,68 @@ func visible_forces(viewer: int, t: int):
 	if _fac_mod(tr["owner"], "hidden") and Data.TERRITORIES[t]["ter"] == "urbano":
 		return null
 	return Data.clone_forces(tr["forces"])
+
+
+## Ricognizione attiva di viewer su t (il territorio o un suo confinante è stato ricognito)
+func has_intel(viewer: int, t: int) -> bool:
+	if viewer < 0 or intel.is_empty():
+		return false
+	if int(intel.get("%d:%d" % [viewer, t], -1)) >= round:
+		return true
+	for j in Data.TERRITORIES[t]["adj"]:
+		if int(intel.get("%d:%d" % [viewer, j], -1)) >= round:
+			return true
+	return false
+
+
+## Che cosa vede viewer del territorio t: {exact, forces (o null), est (-1 ignoto), lo, hi, why}
+## why: "" esatto · "fog" stima della nebbia leggera · "decoy" divisione falsa · "silence" silenzio radio ·
+##      "hidden" guerriglia urbana · "unknown" nebbia totale
+func forces_view(viewer: int, t: int) -> Dictionary:
+	var f = visible_forces(viewer, t)
+	var tr: Dictionary = terr[t]
+	if f != null:
+		var n := Data.total_units(f)
+		return {"exact": true, "forces": f, "est": n, "lo": n, "hi": n, "why": ""}
+	var out := {"exact": false, "forces": null, "est": -1, "lo": -1, "hi": -1, "why": "unknown"}
+	if tr["owner"] >= 0 and int(tr.get("silence", 0)) > 0:
+		out["why"] = "silence"
+		return out
+	var n := Data.total_units(tr["forces"])
+	var hidden: bool = tr["owner"] >= 0 and _fac_mod(tr["owner"], "hidden") and Data.TERRITORIES[t]["ter"] == "urbano"
+	if tr["owner"] >= 0 and int(tr.get("decoy", 0)) > 0:
+		n += int(Data.DECOY_UNITS)
+		out["why"] = "decoy"
+	elif tr["owner"] < 0:
+		out["why"] = "fog"
+	elif hidden and (not fog or is_visible(viewer, t)):
+		out["why"] = "hidden"   # guerriglia urbana: nulla
+		return out
+	elif fog_mode == "light":
+		out["why"] = "fog"
+	else:
+		return out   # nebbia totale: ignoto
+	# stima "circa lo–hi": ±25%, arrotondata a 5 (mai sotto 0)
+	var lo := maxi(0, int(floor(n * 0.75 / 5.0)) * 5)
+	var hi := maxi(lo + 5, int(ceil(n * 1.25 / 5.0)) * 5)
+	if n == 0:
+		lo = 0; hi = 0
+	out["est"] = 0 if n == 0 else maxi(5, roundi(n / 5.0) * 5)
+	out["lo"] = lo
+	out["hi"] = hi
+	return out
+
+
+## Testo della stima per l'interfaccia ("circa 10–15", "sconosciute")
+func estimate_text(viewer: int, t: int) -> String:
+	var v := forces_view(viewer, t)
+	if v["exact"]:
+		return str(v["est"])
+	if int(v["est"]) < 0:
+		return "sconosciute"
+	if int(v["lo"]) == int(v["hi"]):
+		return "circa %d" % int(v["lo"])
+	return "circa %d–%d" % [int(v["lo"]), int(v["hi"])]
 
 
 # ------------------------------------------------------------------ nebbia di guerra
@@ -1071,14 +1150,7 @@ func visible_divisions(viewer: int) -> Array:
 func estimate_forces(viewer: int, t: int) -> int:
 	if not _valid_terr(t):
 		return -1
-	var f = visible_forces(viewer, t)
-	if f != null:
-		return Data.total_units(f)
-	var tr: Dictionary = terr[t]
-	if tr["owner"] < 0:
-		var n := Data.total_units(tr["forces"])
-		return 0 if n == 0 else maxi(5, roundi(n / 5.0) * 5)
-	return -1
+	return int(forces_view(viewer, t)["est"])
 
 
 # ------------------------------------------------------------------ veterani
@@ -1154,12 +1226,13 @@ func _add_recruits(tr: Dictionary, n: int) -> void:
 
 
 ## Una vittoria (attacco o difesa) per il presidio di t
-func _gain_xp(t: int) -> void:
+## Esperienza del presidio: 1 punto per battaglia, 2 se comandata di persona (docs/omogeneita.md §3)
+func _gain_xp(t: int, pts: int = 1) -> void:
 	var tr: Dictionary = terr[t]
 	var o: int = tr["owner"]
 	if o < 0 or Data.total_units(tr["forces"]) == 0:
 		return
-	tr["xp"] = mini(int(tr.get("xp", 0)) + 1, VET_XP[VET_MAX])
+	tr["xp"] = mini(int(tr.get("xp", 0)) + maxi(1, pts), VET_XP[VET_MAX])
 	var nv := vet_level(tr["xp"])
 	if nv > int(tr.get("vet", 0)):
 		tr["vet"] = nv
@@ -1695,12 +1768,20 @@ func play_cards(p: int, idxs, op: String, target = -1) -> Dictionary:
 	if not Data.OPS.has(op):
 		return _fail("Operazione sconosciuta")
 	var tr = null
-	if Data.OPS[op]["target"] == "enemy":
+	if Data.OPS[op]["target"] == "self":
+		if not _valid_terr(target):
+			return _fail("Scegli un tuo territorio")
+		tr = terr[int(target)]
+		if tr["owner"] != p:
+			return _fail("Il bersaglio deve essere un tuo territorio")
+	elif Data.OPS[op]["target"] == "enemy":
 		if not _valid_terr(target):
 			return _fail("Scegli un bersaglio")
 		tr = terr[int(target)]
 		if tr["owner"] == p:
 			return _fail("Il bersaglio deve essere nemico")
+		if op == "ricognizione" and tr["owner"] < 0:
+			return _fail("La ricognizione serve contro un giocatore")
 		if tr["owner"] >= 0 and has_pact(p, tr["owner"]):
 			return _fail(_pact_block_text(p, tr["owner"]))
 		if tr["owner"] >= 0 and in_truce():
@@ -1712,7 +1793,7 @@ func play_cards(p: int, idxs, op: String, target = -1) -> Dictionary:
 			for q in players:
 				if q["alive"] and q["hq"] == int(target):
 					return _fail("Non si può fare un golpe su un QG")
-	if tr != null and tr["owner"] >= 0:
+	if tr != null and tr["owner"] >= 0 and tr["owner"] != p and op != "ricognizione":
 		_note_aggression(p, tr["owner"])
 	# consuma le carte
 	var sorted_idx: Array = []
@@ -1788,6 +1869,24 @@ func play_cards(p: int, idxs, op: String, target = -1) -> Dictionary:
 			(("good" if p == human_idx else "bad") if _involves_human([p, prev]) else "info"), null)
 		_capture(tr["idx"], p, half, {"noCard": true, "silent": true})
 		emit_event("golpe", {"terr": tr["idx"], "by": p})
+	elif op == "finta":
+		tr["decoy"] = int(Data.DECEIT_ROUNDS)
+		tr["silence"] = 0
+		if P["human"]:
+			add_log("Divisione falsa in " + T["name"] + ": per " + str(Data.DECEIT_ROUNDS) + " round i nemici vedono circa " + str(Data.DECOY_UNITS) + " unità in più", "good", p)
+		emit_event("deceit", {"terr": tr["idx"], "by": p, "op": op})
+	elif op == "silenzio":
+		tr["silence"] = int(Data.DECEIT_ROUNDS)
+		tr["decoy"] = 0
+		if P["human"]:
+			add_log("Silenzio radio in " + T["name"] + ": per " + str(Data.DECEIT_ROUNDS) + " round i nemici non sanno quante truppe ci sono", "good", p)
+		emit_event("deceit", {"terr": tr["idx"], "by": p, "op": op})
+	elif op == "ricognizione":
+		intel["%d:%d" % [p, int(tr["idx"])]] = round + int(Data.DECEIT_ROUNDS) - 1
+		_vis_cache.clear()
+		add_log(P["fac"]["short"] + ": ricognizione su " + T["name"] + " (forze esatte per " + str(Data.DECEIT_ROUNDS) + " round)",
+			"good" if p == human_idx else ("bad" if tr["owner"] == human_idx else "info"), null)
+		emit_event("deceit", {"terr": tr["idx"], "by": p, "op": op})
 	P["stats"]["cardsPlayed"] = int(P["stats"].get("cardsPlayed", 0)) + 1
 	_after_action()
 	return _ok()
@@ -1928,14 +2027,98 @@ func _eliminate(p: int, by: int) -> void:
 # ------------------------------------------------------------------ battaglie
 ## Modificatori di battaglia. Le fortificazioni (terr.fort) entrano nei modificatori solo se fort = true (previsioni con la
 ## formula e risoluzione automatica con la formula): BattleSim (battaglia 3D e risoluzione tattica) le legge da setup.def.fort.
-func battle_mods(info: Dictionary, manual: bool = false, fort: bool = true) -> Dictionary:
+func battle_mods(info: Dictionary, manual: bool = false, fort: bool = true, reinf: Dictionary = {}) -> Dictionary:
 	var defender: int = terr[info["terr"]]["owner"]
-	var mo := {"fromIdx": info["from"], "sea": info["sea"], "manual": manual, "vet": int(info.get("vet", 0))}
+	var from_i := int(info["from"]) if info.get("from") != null else -1
+	var worn_a: bool = _valid_terr(from_i) and int(terr[from_i].get("worn", 0)) > 0
+	var worn_d: bool = int(terr[info["terr"]].get("worn", 0)) > 0
+	var mo := {"fromIdx": info["from"], "sea": info["sea"], "manual": manual, "vet": int(info.get("vet", 0)), "worn": worn_a}
+	var md := {"manual": manual, "vet": int(terr[info["terr"]].get("vet", 0)), "worn": worn_d}
+	if not reinf.is_empty():
+		mo["reinf"] = {"forces": reinf["attF"], "dir": int(reinf["attDir"]), "t": float(BattleRules.REINF_T[0])}
+		md["reinf"] = {"forces": reinf["defF"], "dir": int(reinf["defDir"]), "t": float(BattleRules.REINF_T[1])}
 	var mA: Dictionary = Combat.combat_mods(self, info["attacker"], "att", info["terr"], mo)
-	var mD: Dictionary = Combat.combat_mods(self, defender, "def", info["terr"], {"manual": manual, "vet": int(terr[info["terr"]].get("vet", 0))})
+	var mD: Dictionary = Combat.combat_mods(self, defender, "def", info["terr"], md)
 	if fort and not manual:
 		fort_mods(info["terr"], mA, mD)
 	return {"modsA": mA, "modsD": mD}
+
+
+## Logoramento del territorio (0 = fresco, altrimenti turni al recupero)
+func worn_of(t: int) -> int:
+	return int(terr[t].get("worn", 0)) if _valid_terr(t) else 0
+
+
+## Rinforzi dai territori vicini (docs/omogeneita.md §2): per lato la lista dei contributi {terr, forces} e il totale.
+## Non toglie nulla dai territori: le perdite si scalano a fine battaglia (_reinf_settle).
+func reinf_plan(info: Dictionary) -> Dictionary:
+	var t := int(info["terr"])
+	var T: Dictionary = Data.TERRITORIES[t]
+	var out := {"att": [], "def": [], "attF": Data.empty_forces(), "defF": Data.empty_forces(), "attDir": -1, "defDir": -1}
+	var defender: int = terr[t]["owner"]
+	var main_n := {"att": Data.total_units(info["forces"]), "def": Data.total_units(terr[t]["forces"])}
+	for sk in ["att", "def"]:
+		var p: int = int(info["attacker"]) if sk == "att" else defender
+		if p < 0:
+			continue
+		var cap := int(floor(main_n[sk] * BattleRules.REINF_CAP))
+		var tot := 0
+		var best_n := 0
+		var dir := -1
+		for j in T["adj"]:
+			var tj: Dictionary = terr[j]
+			if tj["owner"] != p or not tj["supplied"] or int(tj["regroup"]) > 0:
+				continue
+			if sk == "att" and j == int(info["from"]):
+				continue   # il territorio di partenza ha già mandato ciò che l'attaccante ha scelto
+			var have := Data.total_units(tj["forces"])
+			var f := Data.empty_forces()
+			var n := 0
+			for k in BattleRules.REINF_TYPES:
+				var c := int(floor(int(tj["forces"].get(k, 0)) * BattleRules.REINF_SHARE))
+				f[k] = c
+				n += c
+			# almeno un'unità resta; tetto complessivo
+			while n > 0 and (have - n < 1 or tot + n > cap):
+				for k in ["aa", "art", "tank", "inf"]:
+					if f[k] > 0:
+						f[k] -= 1; n -= 1
+						break
+			if n <= 0:
+				continue
+			out[sk].append({"terr": j, "forces": f})
+			Data.add_forces(out[sk + "F"], f)
+			tot += n
+			if n > best_n:
+				best_n = n
+				dir = -1 if float(Data.TERRITORIES[j]["y"]) <= float(T["y"]) else 1
+		out[sk + "Dir"] = dir
+	return out
+
+
+## A fine battaglia: le perdite dei rinforzi (inviati − superstiti) si scalano dai territori di origine, nell'ordine.
+func _reinf_settle(plan: Dictionary, sk: String, left) -> void:
+	var sent: Dictionary = plan.get(sk + "F", Data.empty_forces())
+	if Data.total_units(sent) == 0:
+		return
+	var surv := _sanitize_forces(left, sent)
+	var lost := Data.empty_forces()
+	for k in Data.UNIT_KEYS:
+		lost[k] = maxi(0, int(sent.get(k, 0)) - int(surv.get(k, 0)))
+	var n_lost := Data.total_units(lost)
+	for c in plan[sk]:
+		var tr: Dictionary = terr[int(c["terr"])]
+		for k in Data.UNIT_KEYS:
+			var x := mini(int(lost[k]), mini(int(c["forces"][k]), int(tr["forces"][k])))
+			if x > 0:
+				tr["forces"][k] -= x
+				lost[k] -= x
+		if Data.total_units(tr["forces"]) == 0:
+			tr["forces"]["inf"] = 1   # il presidio non sparisce mai del tutto
+	if n_lost > 0:
+		var p: int = int(plan.get(sk + "P", -1))
+		if p == human_idx and p >= 0:
+			add_log("Rinforzi dai territori vicini: %d unità perdute in battaglia" % n_lost, "bad", p)
 
 
 ## true se Combat.resolve_battle userà BattleSim (che gestisce da sé le fortificazioni)
@@ -1975,8 +2158,16 @@ func _fort_of(t: int) -> Dictionary:
 func _auto_battle(info: Dictionary, forces_a = null, forces_d = null, manual: bool = false) -> Dictionary:
 	var att: Dictionary = forces_a if forces_a != null else info["forces"]
 	var def: Dictionary = forces_d if forces_d != null else terr[info["terr"]]["forces"]
-	var m := battle_mods(info, manual, not _tactical_for(att, def))
-	return Combat.resolve_battle(att, def, m["modsA"], m["modsD"], rng)
+	var tac := _tactical_for(att, def)
+	var plan := reinf_plan(info) if tac else {}
+	var m := battle_mods(info, manual, not tac, plan)
+	var r := Combat.resolve_battle(att, def, m["modsA"], m["modsD"], rng)
+	if tac:
+		plan["attP"] = int(info["attacker"])
+		plan["defP"] = int(terr[info["terr"]]["owner"])
+		_reinf_settle(plan, "att", r.get("attReinf", {}))
+		_reinf_settle(plan, "def", r.get("defReinf", {}))
+	return r
 
 
 ## orig_a/orig_d: forze all'inizio della battaglia (per le perdite)
@@ -2021,16 +2212,22 @@ func _apply_battle(info: Dictionary, orig_a: Dictionary, orig_d: Dictionary, att
 		". Perdite: " + str(nA) + " att., " + str(nD) + " dif.", type, null)
 	emit_event("battle", {"terr": info["terr"], "winner": winner, "attacker": info["attacker"], "defender": defender,
 		"from": info["from"], "attLosses": a_lost, "defLosses": d_lost})
+	var xp_pts := 2 if bool(info.get("manual", false)) else 1   # comando diretto: esperienza doppia
 	if winner == "att":
 		_capture(info["terr"], info["attacker"], att_left, {"vet": info.get("vet", 0), "xp": info.get("xp", 0)})
 		if terr[info["terr"]]["owner"] == info["attacker"]:
-			_gain_xp(info["terr"])
+			_gain_xp(info["terr"], xp_pts)
 	else:
 		tr["forces"] = Data.clone_forces(def_left)
 		if not retreated or nA > 0:
-			_gain_xp(info["terr"])
+			_gain_xp(info["terr"], xp_pts)
 		if Data.total_units(att_left) > 0 and A["alive"]:
 			_return_home(info, att_left)
+	# logoramento (docs/omogeneita.md §4): chi ha combattuto resta logorato per WORN_ROUNDS turni
+	tr["worn"] = int(Data.WORN_ROUNDS)
+	var back := int(info["from"]) if info.get("from") != null else -1
+	if _valid_terr(back) and terr[back]["owner"] == info["attacker"]:
+		terr[back]["worn"] = int(Data.WORN_ROUNDS)
 
 
 ## I superstiti di un attacco respinto tornano subito nel territorio di partenza (se è ancora loro)
@@ -2097,7 +2294,8 @@ func start_manual_battle() -> Dictionary:
 	var tr: Dictionary = terr[info["terr"]]
 	var T: Dictionary = Data.TERRITORIES[info["terr"]]
 	var defender: int = tr["owner"]
-	var m := battle_mods(info, true)
+	var plan := reinf_plan(info)
+	var m := battle_mods(info, true, true, plan)
 	var A: Dictionary = players[info["attacker"]]
 	var D = players[defender] if defender >= 0 else null
 	var F: Dictionary = _fort_of(info["terr"]).duplicate()
@@ -2106,20 +2304,33 @@ func start_manual_battle() -> Dictionary:
 		F = {"trench": 0, "mines": 0, "bunker": 0}
 	var bunkers: int = 3 if (tr["buildings"].has("bunker") and not sab) else 0
 	var hs: String = str(info.get("human_side", "att"))
+	var ca: Dictionary = m["modsA"].get("ctx", {})
+	var cd: Dictionary = m["modsD"].get("ctx", {})
 	var setup := {
 		"terrIdx": info["terr"], "terrain": T["ter"], "terrName": T["name"], "sea": bool(info["sea"]), "seed": int(floor(_rand() * 1e9)),
 		"att": {"player": info["attacker"], "name": A["name"], "color": A["color"], "forces": Data.clone_forces(info["forces"]), "mods": m["modsA"],
-			"human": A["human"] and hs == "att", "vet": int(info.get("vet", 0)), "faction": int(A["faction"])},
+			"human": A["human"] and hs == "att", "vet": int(info.get("vet", 0)), "faction": int(A["faction"]),
+			"air": bool(ca.get("air", false)), "naval": int(ca.get("naval", 0)), "manual": A["human"] and hs == "att",
+			"worn": bool(ca.get("worn", false))},
 		"def": {
 			"player": defender, "name": D["name"] if D != null else "Neutrali", "color": D["color"] if D != null else Color("#d6d9de"),
 			"forces": Data.clone_forces(tr["forces"]), "mods": m["modsD"],
 			"human": (D["human"] and hs == "def") if D != null else false, "bunkers": bunkers, "fort": F,
 			"vet": int(tr.get("vet", 0)), "faction": int(D["faction"]) if D != null else -1,
+			"air": bool(cd.get("air", false)), "naval": int(cd.get("naval", 0)), "manual": (D["human"] and hs == "def") if D != null else false,
+			"worn": bool(cd.get("worn", false)),
 		},
 		"support": {"att": _support(info["attacker"], T), "def": _support(defender, T)},
 		"human_side": hs,
+		"buildings": tr["buildings"].duplicate(), "hq": D != null and int(D["hq"]) == int(info["terr"]),
 	}
-	_manual = {"info": info, "setup": setup, "origD": Data.clone_forces(tr["forces"])}
+	for sk in ["att", "def"]:
+		if Data.total_units(plan[sk + "F"]) > 0:
+			setup[sk]["reinf"] = {"forces": Data.clone_forces(plan[sk + "F"]), "dir": int(plan[sk + "Dir"]),
+				"t": float(BattleRules.REINF_T[0 if sk == "att" else 1])}
+	plan["attP"] = int(info["attacker"])
+	plan["defP"] = defender
+	_manual = {"info": info, "setup": setup, "origD": Data.clone_forces(tr["forces"]), "reinf": plan}
 	info["manual"] = true
 	return setup
 
@@ -2148,6 +2359,11 @@ func finish_manual_battle(result = null) -> Dictionary:
 		result = {}
 	var att := _sanitize_forces(result.get("att"), orig_a)
 	var def := _sanitize_forces(result.get("def"), orig_d)
+	if m != null and m.get("reinf") is Dictionary:
+		var plan: Dictionary = m["reinf"]
+		# senza dati sui rinforzi (chiusura forzata della scena) si considerano tornati tutti a casa
+		_reinf_settle(plan, "att", result.get("attReinf", plan["attF"]))
+		_reinf_settle(plan, "def", result.get("defReinf", plan["defF"]))
 	if _pending_moot(info, att):
 		_after_action()
 		return _ok("Battaglia non più necessaria")
@@ -2318,7 +2534,7 @@ func _begin_turn(p: int) -> void:
 		if add > 0:
 			_add_recruits(hq_t, add)
 			hq_t["forces"]["inf"] += add
-	# territori: milizia locale, occupazione
+	# territori: milizia locale, occupazione, recupero dal logoramento (solo se riforniti)
 	for tr in terr:
 		if tr["owner"] != p:
 			continue
@@ -2327,6 +2543,10 @@ func _begin_turn(p: int) -> void:
 			tr["forces"]["inf"] += int(Data.TURN_RULES["garrison"])
 		if int(tr["unrest"]) > 0:
 			tr["unrest"] = int(tr["unrest"]) - 1
+		if int(tr.get("worn", 0)) > 0 and tr["supplied"]:
+			tr["worn"] = int(tr["worn"]) - 1
+			if int(tr["worn"]) == 0 and P["human"]:
+				add_log("Le truppe di " + Data.TERRITORIES[tr["idx"]]["name"] + " si sono riprese dal logoramento", "info", p)
 	turn_count += 1
 	add_log("Turno di " + P["fac"]["short"] + " (round " + str(round) + ")", "turn", null)
 	emit_event("turn_start", {"player": p, "round": round})
@@ -2428,6 +2648,15 @@ func end_turn() -> Dictionary:
 func _new_round() -> void:
 	round += 1
 	_vis_cache.clear()
+	# carte inganno: i contatori scendono a ogni round; la ricognizione scade da sé (round di validità)
+	for tr in terr:
+		if int(tr.get("decoy", 0)) > 0:
+			tr["decoy"] = int(tr["decoy"]) - 1
+		if int(tr.get("silence", 0)) > 0:
+			tr["silence"] = int(tr["silence"]) - 1
+	for k in intel.keys():
+		if int(intel[k]) < round:
+			intel.erase(k)
 	if not pacts.is_empty() or not pact_offers.is_empty():
 		_update_pacts()
 	_snapshot()
@@ -3154,7 +3383,8 @@ static func _ser_terr(tr: Dictionary) -> Dictionary:
 		"sabotage": maxi(0, _i(tr["sabotage"])), "unrest": maxi(0, _i(tr["unrest"])), "regroup": maxi(0, _i(tr["regroup"])),
 		"fort": _ser_fort(tr.get("fort")),
 		"supplied": bool(tr["supplied"]), "garrison_t": _f(tr.get("garrison_t", 0.0)),
-		"vet": clampi(_i(tr.get("vet")), 0, VET_MAX), "xp": maxi(0, _i(tr.get("xp"))), "fresh": maxi(0, _i(tr.get("fresh")))}
+		"vet": clampi(_i(tr.get("vet")), 0, VET_MAX), "xp": maxi(0, _i(tr.get("xp"))), "fresh": maxi(0, _i(tr.get("fresh"))),
+		"worn": clampi(_i(tr.get("worn")), 0, 9), "decoy": clampi(_i(tr.get("decoy")), 0, 9), "silence": clampi(_i(tr.get("silence")), 0, 9)}
 
 
 static func _ser_fort(f) -> Dictionary:
@@ -3228,7 +3458,8 @@ func serialize() -> Dictionary:
 		"version": SAVE_VERSION, "game": "frontline_dominion_3d",
 		"opts": {"players": opl, "mode": str(opts["mode"]), "distribution": str(opts["distribution"]), "seed": str(opts["seed"]),
 			"ask_defense": bool(opts["ask_defense"]), "auto_battles": bool(opts["auto_battles"]), "fog": bool(opts.get("fog", false)),
-			"scenario": str(opts.get("scenario", ""))},
+			"fog_mode": str(fog_mode) if (fog_mode != "none" or not fog) else "full", "scenario": str(opts.get("scenario", ""))},
+		"intel": _ser_times(intel),
 		"scen": {"siege_by": _siege_by, "hold_owner": _hold_owner, "hold_since": _hold_since, "targets": scenario_targets.duplicate()},
 		"rng_seed": str(rng.seed), "rng_state": str(rng.state),
 		"time": time, "speed": speed, "paused": paused,
@@ -3277,7 +3508,7 @@ static func deserialize(d) -> Game:
 	if not (d is Dictionary) or not (d.get("players") is Array) or not (d.get("terr") is Array) or not (d.get("opts") is Dictionary):
 		last_load_error = "Salvataggio non valido o danneggiato"
 		return null
-	if _i(d.get("version"), 1) < SAVE_VERSION or not (d.get("turn") is Dictionary):
+	if _i(d.get("version"), 1) < SAVE_MIN_VERSION or not (d.get("turn") is Dictionary):
 		last_load_error = "Salvataggio di una versione precedente (tempo reale): non compatibile con la modalità a turni"
 		return null
 	if _i(d.get("version"), 1) > SAVE_VERSION:
@@ -3288,10 +3519,11 @@ static func deserialize(d) -> Game:
 		return null
 	if d["terr"].size() != Data.TERRITORIES.size():
 		return null
+	# migrazione v2 → v3: il vecchio bool fog diventa nebbia totale/nessuna; worn/decoy/silence/intel partono a zero
 	var o := {"players": so["players"], "mode": str(so.get("mode", "conquista")), "distribution": str(so.get("distribution", "regionale")),
 		"seed": str(so.get("seed", "1")).to_int(), "ask_defense": bool(so.get("ask_defense", false)),
 		"auto_battles": bool(so.get("auto_battles", false)), "fog": bool(so.get("fog", false)),
-		"scenario": str(so.get("scenario", "")), "_no_start": true}
+		"fog_mode": str(so.get("fog_mode", "")), "scenario": str(so.get("scenario", "")), "_no_start": true}
 	var g := Game.new(o)
 	if g.players.size() != d["players"].size():
 		last_load_error = "Salvataggio non valido o danneggiato"
@@ -3367,7 +3599,8 @@ func _load_state(d: Dictionary) -> void:
 			"buildings": S.get("buildings") if S.get("buildings") is Array else [],
 			"building": S.get("building"), "queue": S.get("queue") if S.get("queue") is Array else [],
 			"sabotage": S.get("sabotage"), "unrest": S.get("unrest"), "regroup": S.get("regroup"), "fort": S.get("fort"),
-			"supplied": S.get("supplied", true), "garrison_t": S.get("garrison_t"), "vet": S.get("vet"), "xp": S.get("xp"), "fresh": S.get("fresh")})
+			"supplied": S.get("supplied", true), "garrison_t": S.get("garrison_t"), "vet": S.get("vet"), "xp": S.get("xp"), "fresh": S.get("fresh"),
+			"worn": S.get("worn", 0), "decoy": S.get("decoy", 0), "silence": S.get("silence", 0)})
 		for k in t2:
 			tr[k] = t2[k]
 		if tr["owner"] >= players.size():
@@ -3427,6 +3660,11 @@ func _load_state(d: Dictionary) -> void:
 	pact_offers = _ser_pacts(d.get("pact_offers", []), "from", "to").filter(func(of): return of["from"] >= 0 and of["from"] < np and of["to"] >= 0 and of["to"] < np)
 	_pact_cd = _ser_times(d.get("pact_cd", {}))
 	_aggr = _ser_times(d.get("aggr", {}))
+	intel = {}
+	var il = d.get("intel", {})
+	if il is Dictionary:
+		for k in il:
+			intel[str(k)] = int(_f(il[k]))
 	_vis_cache.clear()
 	# scenario
 	var sc = d.get("scen")

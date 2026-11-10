@@ -425,6 +425,47 @@ func t_balance() -> void:
 	var wa := _series("informativo: specchio con contraerea ed elicotteri", "pianura", {"inf": 10, "tank": 5, "art": 2, "aa": 2, "heli": 1}, {"inf": 10, "tank": 5, "art": 2, "aa": 2, "heli": 1}, n)
 	print("    (con contraerea ed elicotteri il difensore è più forte: vince il %.0f%%)" % ((1.0 - wa) * 100))
 
+## Fazioni (omogeneità §6): stesso esercito, modificatori di fazione in battaglia (FO carri +20% hp e artiglieria +25%;
+## UL guerriglia +10% in difesa in bosco/città; AAN e CP neutri sul campo). Informativo + controllo di sbilanciamento.
+func t_factions() -> void:
+	var n := 6 if quick else 12
+	print("- fazioni: specchio 8f4c2a in foresta, %d seed per caso (attacco e difesa)" % n)
+	var army := {"inf": 8, "tank": 4, "art": 2}
+	var res := {}
+	for fi in Data.FACTIONS.size():
+		var fm: Dictionary = Data.FACTIONS[fi]["mods"]
+		var wa := 0
+		var wd := 0
+		for sd in n:
+			for role in ["att", "def"]:
+				var s := _setup("foresta", army, army, 700 + sd * 7)
+				var side: Dictionary = s[role]
+				var mods: Dictionary = side["mods"]
+				if fm.get("tankHp"):
+					mods["hp"] = {"tank": float(fm["tankHp"])}
+				if fm.get("artAtk"):
+					mods["unit"] = {"art": float(fm["artAtk"])}
+				if fm.get("guerrilla") and role == "def":
+					mods["atk"] = float(mods["atk"]) * float(fm["guerrilla"])
+				side["faction"] = fi
+				var b = BS.new(s)
+				var r: Dictionary = b.run_headless()
+				b.dispose()
+				if r["winner"] == role:
+					if role == "att":
+						wa += 1
+					else:
+						wd += 1
+		res[fi] = [wa, wd]
+		print("    %-4s attacca e vince %d/%d · difende e vince %d/%d" % [Data.FACTIONS[fi]["short"], wa, n, wd, n])
+	var lo := 1e9
+	var hi := -1e9
+	for fi in res:
+		var tot: float = float(res[fi][0] + res[fi][1]) / (2.0 * n)
+		lo = minf(lo, tot); hi = maxf(hi, tot)
+	print("    forbice tra le fazioni (vittorie complessive): %.0f%% … %.0f%%" % [lo * 100, hi * 100])
+	_check(hi - lo <= 0.3, "nessuna fazione sbilanciata oltre 30 punti (forbice %.0f)" % ((hi - lo) * 100))
+
 func t_timing() -> void:
 	print("- tempi della risoluzione automatica (Combat.resolve_battle con contesto tattico)")
 	var cases := [
@@ -470,7 +511,7 @@ func _process(_delta: float) -> bool:
 		if a.begins_with("--only="):
 			only = a.substr(7)
 	print("== test_tactics ==")
-	for t in ["ambush", "flank", "artillery", "spotting", "recon", "fort", "relief", "balance", "timing"]:
+	for t in ["ambush", "flank", "artillery", "spotting", "recon", "fort", "relief", "balance", "factions", "timing"]:
 		if only == "" or only.split(",").has(t):
 			call("t_" + t)
 	print("== test_tactics: ", "OK" if _fail == 0 else "%d FALLIMENTI" % _fail, " ==")

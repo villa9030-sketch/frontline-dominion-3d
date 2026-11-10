@@ -186,12 +186,13 @@ func build_help() -> Control:
 • La [b]ricerca[/b] è [b]globale[/b]: vale in tutti i tuoi territori, sblocca nuove unità e dà più attacco. Gli [b]edifici[/b] valgono solo dove li costruisci.
 • Lo [b]spostamento[/b] non ha limiti di distanza: porta le truppe dove servono attraverso i tuoi territori collegati (uno per turno; con due aeroporti da Tech 2 anche per ponte aereo).")
 	_hsec(c2, "Comandi", "• [b]Clic sinistro[/b]: seleziona un territorio\n• [b]Attacco[/b]: seleziona un tuo territorio (almeno 2 unità), poi clic su un bersaglio evidenziato: si apre il pannello d'attacco con i cursori per ogni tipo di unità e la previsione\n• [b]Spostamento[/b]: nella terza fase, tuo territorio → clic su un tuo territorio evidenziato → [b]Sposta[/b]\n• [b]Rinforzi[/b]: nel rifornimento lo schieramento è già attivo, clic su un tuo territorio verde (N attiva/disattiva)\n• [b]Carte[/b] (scheda nella barra a sinistra): seleziona un tris (tre uguali, tre diverse o con jolly) e scegli l'operazione: rinforzi, missile, sabotaggio o golpe\n• [b]Fase successiva[/b] / [b]Fine turno[/b] (Invio): pulsante principale del riquadro ORDINI\n• [b]Telecamera[/b]: WASD o bordi per spostarti, rotella per lo zoom, Q/E per ruotare\n• [b]Spazio[/b] nei turni IA: accelera, di nuovo per saltare · [b]Esc[/b] annulla / menu · [b]F1/H[/b] questo aiuto · [b]F5/F9[/b] salvataggio/caricamento rapido")
-	_hsec(c2, "Battaglie", "Quando attacchi, o un'IA attacca te, puoi scegliere la [b]risoluzione automatica[/b] oppure [b]comandare la battaglia[/b] in tempo reale sul campo 3D, sia in attacco sia in [b]difesa[/b]. Terreno, fortificazioni, QG, tecnologia, rifornimenti, petrolio e [b]veterani[/b] influenzano lo scontro.\n[b]Il campo è grande[/b]: i carri colpiscono da centinaia di metri, l'artiglieria da un capo all'altro della mappa. Con la [b]rotella[/b] allontani la vista fino alla [b]vista d'insieme[/b]: i mezzi diventano [b]pedine[/b] con il simbolo del tipo e il numero di unità (le tue rettangolari, le nemiche con gli angoli smussati).\n[b]Vedere prima di sparare[/b]: vedi i nemici solo entro il raggio di vista delle tue unità; le zone non osservate sono più scure. Un nemico perso di vista lascia un [b]fantasma[/b] con «?» e da quanti secondi non lo vedi. «AVVISTATO» segnala un nemico appena scoperto (anche sulla minimappa).\n[b]Copertura[/b]: boschi e terreno accidentato danno copertura leggera, città e bunker pesante (passa il mouse sul terreno per saperlo). La [b]fanteria ferma al riparo resta nascosta[/b] finché non spara (icona a foglia sulle tue unità nascoste) ed è letale contro i carri da vicino. Il primo fuoco da posizione nascosta è un'[b]IMBOSCATA[/b]: danni ×2 per 4 s.\n[b]Corazza[/b]: i carri reggono di fronte ma subiscono ×1,6 sul [b]FIANCO[/b] e ×2,5 sul [b]RETRO[/b] (mezzi leggeri ×1,25 / ×1,5). Passando il mouse su un mezzo nemico vedi da che lato lo colpirebbero le tue unità selezionate: aggiralo.\n[b]Artiglieria[/b]: spara solo su nemici avvistati da qualcuno (o con il [b]fuoco d'area[/b], tasto [b]X[/b]); i colpi si disperdono di più a grande distanza; dopo ogni spostamento deve piazzarsi per qualche secondo e ha una gittata minima.\nSelezionando le unità vedi a terra la [b]gittata[/b] (linea piena), la [b]vista[/b] (tratteggio) e per l'artiglieria la [b]gittata minima[/b] (rosso).\nSul campo: prima lo [b]schieramento[/b] (clic destro nella tua zona, [b]Invio[/b] per iniziare; in difesa: fanteria nei boschi e in città, carri dietro i rilievi), poi [b]clic destro[/b] muovi/attacca · [b]G[/b] attacco in movimento · [b]H[/b] alt · [b]X[/b] fuoco d'area · [b]B[/b] sbarramento d'artiglieria · [b]Ctrl+A[/b] tutte le unità · [b]Ctrl+1..9[/b] gruppi · [b]C[/b] centra la selezione · [b]V[/b] vai all'allarme · [b]Home[/b] torna all'esercito · [b]WASD[/b]/[b]Q/E[/b] telecamera · [b]P/Spazio[/b] pausa · [b]Invio[/b] continua a fine battaglia.\n[b]Abilità[/b] (pulsanti in basso): [b]F[/b] cortina fumogena (meno danni dal fuoco diretto per alcuni secondi e più difficili da avvistare; poi ricarica) · [b]J[/b] supporto aereo (un caccia bombarda l'area indicata poco dopo la chiamata; una volta per battaglia) · [b]T[/b] mantieni posizione (i reparti restano fermi e sparano solo ai nemici a tiro; di nuovo T per sbloccarli).")
+	_hsec(c2, "Battaglie", "Quando attacchi, o un'IA attacca te, puoi scegliere la [b]risoluzione automatica[/b] oppure [b]comandare la battaglia[/b] in tempo reale sul campo 3D, sia in attacco sia in [b]difesa[/b]. Terreno, fortificazioni, QG, tecnologia, rifornimenti, petrolio e [b]veterani[/b] influenzano lo scontro.\n[b]Il campo è grande[/b]: i carri colpiscono da centinaia di metri, l'artiglieria da un capo all'altro della mappa. Con la [b]rotella[/b] allontani la vista fino alla [b]vista d'insieme[/b]: i mezzi diventano [b]pedine[/b] con il simbolo del tipo e il numero di unità (le tue rettangolari, le nemiche con gli angoli smussati).\n[b]Vedere prima di sparare[/b]: vedi i nemici solo entro il raggio di vista delle tue unità; le zone non osservate sono più scure. Un nemico perso di vista lascia un [b]fantasma[/b] con «?» e da quanti secondi non lo vedi. «AVVISTATO» segnala un nemico appena scoperto (anche sulla minimappa).\n[b]Copertura[/b]: boschi e terreno accidentato danno copertura leggera, città e bunker pesante (passa il mouse sul terreno per saperlo). La [b]fanteria ferma al riparo resta nascosta[/b] finché non spara (icona a foglia sulle tue unità nascoste) ed è letale contro i carri da vicino. Il primo fuoco da posizione nascosta è un'[b]IMBOSCATA[/b]: danni ×2 per 4 s.\n[b]Corazza[/b]: i carri reggono di fronte ma subiscono ×1,6 sul [b]FIANCO[/b] e ×2,5 sul [b]RETRO[/b] (mezzi leggeri ×1,25 / ×1,5). Passando il mouse su un mezzo nemico vedi da che lato lo colpirebbero le tue unità selezionate: aggiralo.\n[b]Artiglieria[/b]: spara solo su nemici avvistati da qualcuno (o con il [b]fuoco d'area[/b], tasto [b]X[/b]); i colpi si disperdono di più a grande distanza; dopo ogni spostamento deve piazzarsi per qualche secondo e ha una gittata minima.\nSelezionando le unità vedi a terra la [b]gittata[/b] (linea piena), la [b]vista[/b] (tratteggio) e per l'artiglieria la [b]gittata minima[/b] (rosso).\nSul campo: prima lo [b]schieramento[/b] (clic destro nella tua zona, [b]Invio[/b] per iniziare; in difesa: fanteria nei boschi e in città, carri dietro i rilievi), poi [b]clic destro[/b] muovi/attacca · [b]G[/b] attacco in movimento · [b]H[/b] alt · [b]X[/b] fuoco d'area · [b]B[/b] sbarramento d'artiglieria · [b]Ctrl+A[/b] tutte le unità · [b]Ctrl+1..9[/b] gruppi · [b]C[/b] centra la selezione · [b]V[/b] vai all'allarme · [b]Home[/b] torna all'esercito · [b]WASD[/b]/[b]Q/E[/b] telecamera · [b]P/Spazio[/b] pausa · [b]Invio[/b] continua a fine battaglia.\n[b]Abilità[/b] (pulsanti in basso): [b]F[/b] cortina fumogena (meno danni dal fuoco diretto per alcuni secondi e più difficili da avvistare; poi ricarica) · [b]J[/b] supporto aereo (un caccia bombarda l'area indicata poco dopo la chiamata; una volta per battaglia) · [b]T[/b] mantieni posizione (i reparti restano fermi e sparano solo ai nemici a tiro; di nuovo T per sbloccarli). · [b]Tab[/b] vista strategica e ritorno: da in alto il campo diventa una plancia con il fronte colorato, le frecce di movimento dei reparti e gli obiettivi (bunker, ponti, guadi, alture) del colore di chi li controlla.")
 	var fz := ""
 	for F in Data.FACTIONS:
 		fz += "• [b][color=%s]%s[/color][/b] — %s: %s\n" % [F["color"], F["short"], F["doctrine"], UIKit.terms("; ".join(F["perks"]))]
 	_hsec(c2, "Fazioni", fz.strip_edges())
-	_hsec(c2, "Nebbia, veterani e diplomazia", "[b]Nebbia di guerra[/b] (si sceglie nella nuova campagna): vedi le forze solo nei tuoi territori e in quelli confinanti (l'AAN un anello in più col radar); altrove solo una stima [b]≈N[/b] o nulla, e la previsione d'attacco usa la stima. [b]Veterani[/b]: ogni vittoria dà esperienza al presidio vincitore, fino a ★★★ (+6%% per stella); le truppe portano le stelle con sé. [b]Diplomazia[/b]: nella scheda Potenze (barra a sinistra) proponi a un'IA un [b]patto di non aggressione[/b] per alcuni turni (accetta se non sei in testa e ha nemici più pericolosi); anche le IA in difficoltà possono proportelo. Durante il patto nessuno dei due può attaccare l'altro né colpirlo con le carte.")
+	_hsec(c2, "La campagna decide la battaglia", "[b]Cinque minuti[/b]: ogni battaglia dura al massimo 5 minuti (anche in automatico). Sul campo ci sono [b]obiettivi[/b] scelti dal territorio: il [b]Quartier generale[/b] se è una capitale, gli [b]edifici[/b] (fabbrica, aeroporto, porto, raffineria), [b]ponti e guadi[/b], l'[b]altura[/b] più alta, la linea dei bunker. Si conquista un obiettivo tenendoci unità di terra per [b]60 s[/b] senza nemici nel raggio. Allo scadere vince l'attaccante solo se ha annientato il difensore o tiene [b]più obiettivi[/b] di lui: in parità resiste il difensore. Il riquadro sotto il timer mostra obiettivi, chi li tiene e i contatori.\n[b]Rinforzi[/b]: a metà battaglia (150 s il difensore, 165 s l'attaccante) entrano dal proprio bordo il 20% delle unità di terra di ogni territorio confinante dello stesso proprietario (rifornito, non in riorganizzazione; al massimo metà dell'esercito iniziale). I superstiti dei rinforzi tornano a casa; le perdite si scalano dai territori di origine.\n[b]Supporto aereo (J)[/b] solo con un aeroporto proprio nel territorio o accanto; [b]tiro navale[/b] (sbarramenti) sbarcando dal mare con un porto nel territorio di partenza, o difendendo un territorio costiero con porto. L'[b]artiglieria dei territori vicini[/b] (Tech 3) dà sbarramenti.\n[b]Ritirata ordinata[/b] (pulsante Ritirata, solo in attacco): i reparti ripiegano verso il tuo bordo; chi lo raggiunge è [b]salvo[/b] e torna a casa, chi resta combatte. Anche l'IA si ritira quando è ormai battuta.\n[b]Comando diretto[/b]: chi comanda la battaglia di persona ha [b]+10% di attacco[/b] e il presidio guadagna [b]esperienza doppia[/b] (scritto nel pannello d'attacco e nell'HUD).\n[b]Logoramento[/b]: dopo ogni battaglia il territorio difeso e quello da cui è partito l'attacco restano [b]logorati[/b] (−15% in combattimento) per 2 turni; si recupera stando un turno senza combattere e [b]riforniti[/b]. Lo vedi nel pannello del territorio e nel tooltip sul tabellone.")
+	_hsec(c2, "Nebbia, inganni, veterani e diplomazia", "[b]Nebbia di guerra[/b] (si sceglie nella nuova campagna): [b]leggera[/b] (consigliata) = forze esatte nei tuoi territori e in quelli confinanti (l'AAN un anello in più col radar), altrove una stima [b]«circa 10–15»[/b]; [b]totale[/b] = lontano non vedi nulla; [b]nessuna[/b] = tutto visibile. Le IA decidono su ciò che vedono. [b]Carte inganno[/b] (tris di carte): [b]Divisione falsa[/b] su un tuo territorio (per 2 round i nemici lo vedono solo come stima, gonfiata di 8 unità), [b]Silenzio radio[/b] (per 2 round i nemici non sanno nulla delle tue forze lì), [b]Ricognizione[/b] su un territorio nemico (per 2 round vedi forze, edifici e fortificazioni esatte di quel territorio e dei suoi vicini). [b]Veterani[/b]: ogni vittoria dà esperienza al presidio vincitore, fino a ★★★ (+6% per stella); le truppe portano le stelle con sé. [b]Diplomazia[/b]: nella scheda Potenze (barra a sinistra) proponi a un'IA un [b]patto di non aggressione[/b] per alcuni turni (accetta se non sei in testa e ha nemici più pericolosi); anche le IA in difficoltà possono proportelo. Durante il patto nessuno dei due può attaccare l'altro né colpirlo con le carte.")
 	cols.add_child(c1)
 	cols.add_child(c2)
 	v.add_child(cols)
@@ -315,10 +316,15 @@ func build_battle_prompt(pb: Dictionary) -> Control:
 	if st["buildings"].has("bunker"):
 		notes.append("Fortificazioni sabotate" if float(st.get("sabotage", 0)) > 0 else "Fortificazioni")
 	if D != null and int(D["hq"]) == t:
-		notes.append("Quartier generale")
+		notes.append("Quartier generale (obiettivo: difendilo)")
 	if pb.get("sea", false):
 		notes.append("Sbarco dal mare")
+	if def_vis and main.worn_of(t) > 0:
+		notes.append("difensore logorato −15%")
+	if fr >= 0 and main.worn_of(fr) > 0:
+		notes.append("attaccante logorato −15%")
 	v.add_child(_center_text(" · ".join(notes), 14, UIKit.DIM))
+	v.add_child(_bonus_line(t, fr, human_att))
 	if tm:
 		var fh := CenterContainer.new()
 		fh.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -365,6 +371,41 @@ func build_battle_prompt(pb: Dictionary) -> Control:
 			["⚙  Risoluzione automatica", "normal", "bp-auto", "Esito calcolato immediatamente"],
 			["⚔  Difendi in prima persona (3D)", "primary", "bp-manual", "Schieri per primo i difensori sul campo 3D e comandi la difesa (+10%)" if can_manual else no3d, can_manual]]))
 	return v
+
+## Riga che spiega cosa porta il comando diretto e cosa la campagna porta in battaglia (docs/omogeneita.md §2-3).
+func _bonus_line(t: int, from: int, att_side: bool) -> Control:
+	var g = main.game
+	var hh: int = main.h()
+	var parts := ["[color=#9ee89a][b]Comando diretto (3D)[/b]: +10% attacco, esperienza doppia[/color]"]
+	var ctx_parts := []
+	if g != null and hh >= 0:
+		var role := "att" if att_side else "def"
+		var ma = main.combat_mods(hh, role, t, {"fromIdx": from, "sea": Data.TERRITORIES[from]["sea"].has(t) if from >= 0 else false, "manual": true})
+		var cx: Dictionary = ma.get("ctx", {}) if ma is Dictionary else {}
+		if bool(cx.get("air", false)):
+			ctx_parts.append("supporto aereo (J) dall'aeroporto")
+		if int(cx.get("naval", 0)) > 0:
+			ctx_parts.append("tiro navale ×%d" % int(cx.get("naval", 0)))
+		if int(cx.get("support", 0)) > 0:
+			ctx_parts.append("artiglieria di supporto ×%d" % int(cx.get("support", 0)))
+		if g.has_method("reinf_plan"):
+			var info := {"attacker": hh if att_side else int(g.terr[t]["owner"]), "terr": t, "from": from, "sea": false,
+				"forces": g.terr[from]["forces"] if (att_side and from >= 0) else main._force_sel}
+			if not att_side:
+				info["forces"] = g.pending_battle["forces"] if g.pending_battle != null else Data.empty_forces()
+			var plan: Dictionary = g.reinf_plan(info)
+			var n := Data.total_units(plan["attF" if att_side else "defF"])
+			if n > 0:
+				ctx_parts.append("%d rinforzi dai territori vicini a metà battaglia" % n)
+		var bl: Array = g.terr[t]["buildings"]
+		if not bl.is_empty() and main.is_vis(t):
+			ctx_parts.append("edifici sul campo come obiettivi")
+	parts.append("[color=#c9d2c6]Battaglia di %d min: allo scadere decidono gli obiettivi tenuti (parità: difensore)[/color]" % int(BattleRules.BATTLE_T / 60.0))
+	if not ctx_parts.is_empty():
+		parts.append("[color=#c9d2c6]Dal territorio: " + ", ".join(ctx_parts) + "[/color]")
+	var r := UIKit.rich("\n".join(parts), 12)
+	r.custom_minimum_size.x = 520
+	return r
 
 func _intel_box(est: int) -> Control:
 	var pp := PanelContainer.new()
@@ -492,11 +533,18 @@ func build_force_panel(kind: String, from: int, to: int) -> Control:
 				sea = true
 		if sea:
 			notes.append("sbarco dal mare")
+		if main.worn_of(from) > 0:
+			notes.append("le tue truppe sono logorate (−15%)")
+		if vis and main.worn_of(to) > 0:
+			notes.append("difensore logorato (−15%)")
 		var nl2 := UIKit.label(" · ".join(notes), 13, UIKit.DIM)
 		nl2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rc.add_child(nl2)
 		rc.add_child(UIKit.header("Fortificazioni del difensore", "" if vis else "nella nebbia"))
 		rc.add_child(fort_row(to, vis))
+		var bl := _bonus_line(to, from, true)
+		bl.custom_minimum_size.x = 340
+		rc.add_child(bl)
 		var pp := PanelContainer.new()
 		_fp["pred_p"] = pp
 		var pv := UIKit.vbox(2)

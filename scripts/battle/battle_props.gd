@@ -101,6 +101,18 @@ static func _blob(st: SurfaceTool, c: Vector3, rad: Vector3, col: Color, rng: Ra
 		st.set_normal((norms[vi] + Vector3(0, 0.2, 0)).normalized())
 		st.add_vertex(c + pp)
 
+static func _disc(st: SurfaceTool, c: Vector3, n: Vector3, r: float, seg: int, col: Color) -> void:
+	var up := Vector3.UP if absf(n.y) < 0.95 else Vector3.RIGHT
+	var u := n.cross(up).normalized()
+	var v := n.cross(u).normalized()
+	for i in seg:
+		var a0 := TAU * i / seg
+		var a1 := TAU * (i + 1) / seg
+		var p0 := c + (u * cos(a0) + v * sin(a0)) * r
+		var p1 := c + (u * cos(a1) + v * sin(a1)) * r
+		for q in [c, p1, p0]:
+			st.set_color(col); st.set_normal(n); st.add_vertex(q)
+
 static func _box(st: SurfaceTool, c: Vector3, s: Vector3, col: Color, b: Basis = Basis.IDENTITY) -> void:
 	var h := s * 0.5
 	var faces := [
@@ -126,7 +138,7 @@ static func _box(st: SurfaceTool, c: Vector3, s: Vector3, col: Color, b: Basis =
 # ---------------------------------------------------------------------------- vegetazione
 static func tree_mesh(kind: String, variant := 0) -> Mesh:
 	var P = ext("Props")
-	if P != null and P.has_method("tree_mesh") and kind in ["pine", "broadleaf", "palm", "dead", "snowpine", "bush", "birch"]:
+	if P != null and P.has_method("tree_mesh") and kind in ["pine", "broadleaf", "palm", "dead", "snowpine", "bush", "birch", "cypress"]:
 		var m = P.tree_mesh("pine", "snow") if kind == "snowpine" else P.tree_mesh(kind)
 		if m is Mesh:
 			return m
@@ -194,6 +206,112 @@ static func tree_mesh(kind: String, variant := 0) -> Mesh:
 	var mesh := st.commit()
 	mesh.surface_set_material(0, vc_mat("foliage", 0.92, true))
 	return mesh
+
+## Albero "lontano" (≈20 triangoli) con i colori medi del modello vero: chioma a diamante (conifere: cono) e tronco a
+## due lamine incrociate. Da BattleTerrain.LOD_T in poi prende il posto del modello completo (≈900 triangoli).
+static func tree_lod_mesh(kind: String) -> Mesh:
+	var key := "lod_" + kind
+	if _mats.has(key):
+		return _mats[key]
+	var hi := tree_mesh(kind)
+	var crown := Color(0.2, 0.3, 0.12)
+	var trunk := Color(0.3, 0.22, 0.14)
+	var best := -1
+	var ys := []   # [y, r] dei vertici della chioma
+	for s in hi.get_surface_count():
+		var arr := hi.surface_get_arrays(s)
+		var cols: PackedColorArray = arr[Mesh.ARRAY_COLOR]
+		var vs: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		if cols.is_empty():
+			continue
+		var acc := Color(0, 0, 0, 0)
+		for c in cols:
+			acc += c
+		acc /= float(cols.size())
+		if cols.size() > best:
+			if best >= 0:
+				trunk = crown
+			best = cols.size()
+			crown = acc
+			ys = []
+			for v in vs:
+				ys.append([v.y, sqrt(v.x * v.x + v.z * v.z)])
+		else:
+			trunk = acc
+	var ymin := 1e9
+	var ymax := -1e9
+	var rm := 0.0
+	for e in ys:
+		ymin = minf(ymin, e[0]); ymax = maxf(ymax, e[0]); rm += e[1]
+	rm = (rm / maxf(1.0, ys.size())) * 1.25 if not ys.is_empty() else 1.5
+	if ys.is_empty():
+		ymin = 2.0; ymax = 8.0
+	var conif := kind in ["pine", "snowpine", "cypress"]
+	var ring_y := ymin + (ymax - ymin) * (0.22 if conif else 0.48)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# colore medio della chioma (lo shader del fogliame scurisce un po' le cavità)
+	var cc := crown * 0.9
+	cc.a = 1.0
+	var top := Vector3(0, ymax, 0)
+	var bot := Vector3(0, ymin, 0)
+	var n := 8
+	for i in n:
+		var a0 := TAU * i / n
+		var a1 := TAU * (i + 1) / n
+		var p0 := Vector3(cos(a0) * rm, ring_y, sin(a0) * rm)
+		var p1 := Vector3(cos(a1) * rm, ring_y, sin(a1) * rm)
+		var side := Vector3(cos((a0 + a1) * 0.5), 0.0, sin((a0 + a1) * 0.5))
+		var nu := (side + Vector3.UP * 0.6).normalized()
+		var nd := (side - Vector3.UP * 0.5).normalized()
+		var c_up := cc * (0.95 + 0.1 * float(i % 2))
+		var c_dn := cc * 0.7
+		c_up.a = 1.0; c_dn.a = 1.0
+		for tri in [[p0, top, p1, nu, c_up], [p0, p1, bot, nd, c_dn]]:
+			st.set_normal(tri[3])
+			st.set_color(tri[4])
+			st.add_vertex(tri[0]); st.add_vertex(tri[1]); st.add_vertex(tri[2])
+	# tronco: due lamine incrociate (il materiale non scarta le facce posteriori)
+	var tw := 0.22 if not conif else 0.18
+	var tc := trunk
+	tc.a = 1.0
+	for k in 2:
+		var d := Vector3(1, 0, 0) if k == 0 else Vector3(0, 0, 1)
+		var nn := Vector3(0, 0, 1) if k == 0 else Vector3(1, 0, 0)
+		var a := -d * tw
+		var b := d * tw
+		var h := Vector3(0, ring_y, 0)
+		st.set_normal(nn)
+		st.set_color(tc)
+		st.add_vertex(a); st.add_vertex(b); st.add_vertex(b + h)
+		st.add_vertex(a); st.add_vertex(b + h); st.add_vertex(a + h)
+	var mesh := st.commit()
+	mesh.surface_set_material(0, _lod_mat())
+	_mats[key] = mesh
+	return mesh
+
+## Stessa luce del fogliame vero (lambert avvolgente, controluce) senza letture di texture: i colori combaciano.
+const LOD_SHADER := """
+shader_type spatial;
+render_mode cull_disabled, diffuse_lambert_wrap, specular_schlick_ggx;
+void fragment() {
+	vec3 c = COLOR.rgb;
+	vec3 alb = mix(pow((c + vec3(0.055)) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
+	ALBEDO = alb;
+	ROUGHNESS = 0.82;
+	SPECULAR = 0.25;
+	BACKLIGHT = alb * 0.55;
+}
+"""
+static func _lod_mat() -> ShaderMaterial:
+	if _mats.has("foliage_lod"):
+		return _mats["foliage_lod"]
+	var sh := Shader.new()
+	sh.code = LOD_SHADER
+	var m := ShaderMaterial.new()
+	m.shader = sh
+	_mats["foliage_lod"] = m
+	return m
 
 ## Ciuffo d'erba (9 fili) per MultiMesh; `dry` = sterpaglia.
 static func grass_mesh(dry := false) -> Mesh:
@@ -589,7 +707,13 @@ static func landmark_mesh(kind: String) -> Mesh:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(kind)
 	match kind:
-		"house":
+		"church":
+			# chiesa di paese: navata con tetto a capanna, campanile con cuspide
+			_box(st, Vector3(0, 4.0, 0), Vector3(22.0, 8.0, 10.0), Color(0.8, 0.76, 0.66))
+			_gable(st, Vector3(0, 8.0, 0), 22.0, 10.0, 3.6, Color(0.5, 0.26, 0.19))
+			_box(st, Vector3(-13.0, 11.0, 0), Vector3(5.2, 22.0, 5.2), Color(0.78, 0.74, 0.64))
+			_cone(st, Vector3(-13.0, 22.0, 0), 7.0, 3.9, 4, Color(0.42, 0.24, 0.18), Color(0.38, 0.22, 0.16), rng)
+		"house", "fhouse":
 			_box(st, Vector3(0, 2.6, 0), Vector3(11.0, 5.2, 7.5), Color(0.78, 0.72, 0.6))
 			_gable(st, Vector3(0, 5.2, 0), 11.0, 7.5, 2.8, Color(0.55, 0.27, 0.2))
 			_box(st, Vector3(3.2, 7.2, 1.2), Vector3(0.8, 2.2, 0.8), Color(0.5, 0.45, 0.4))
@@ -631,12 +755,104 @@ static func landmark_mesh(kind: String) -> Mesh:
 			_box(st, Vector3(1.5, 0.5, 2.8), Vector3(3.5, 1.0, 0.5), c)
 			for i in 6:
 				_box(st, Vector3(rng.randf_range(-3, 3), 0.2, rng.randf_range(-2.5, 2.5)), Vector3(0.6, 0.4, 0.5) * (0.6 + rng.randf()), c.darkened(0.2), Basis(Vector3.UP, rng.randf() * TAU))
+		"wall":
+			# muretto a secco lungo 1 (scala Z): pietre sfalsate su due corsi, copertina irregolare
+			var sc := Color(0.6, 0.57, 0.52)
+			_box(st, Vector3(0, 0.3, 0.5), Vector3(0.7, 0.6, 1.02), sc.darkened(0.05))
+			for i in 3:
+				var z := 0.17 + i * 0.33
+				_box(st, Vector3(rng.randf_range(-0.05, 0.05), 0.72, z), Vector3(0.62, 0.26, 0.3), sc.lerp(Color(0.5, 0.48, 0.42), rng.randf()), Basis(Vector3.UP, rng.randf_range(-0.2, 0.2)))
+			_box(st, Vector3(0.36, 0.12, 0.5), Vector3(0.05, 0.24, 1.0), Color(0.3, 0.36, 0.2))
+			_box(st, Vector3(-0.36, 0.12, 0.5), Vector3(0.05, 0.24, 1.0), Color(0.3, 0.36, 0.2))
+		"bale":
+			# rotoballa di fieno (asse X), diametro 1.6 m
+			var hc := Color(0.78, 0.66, 0.38)
+			_cyl(st, Vector3(-0.65, 0.8, 0), Vector3(0.65, 0.8, 0), 0.8, 0.8, 10, hc, hc.darkened(0.06))
+			_disc(st, Vector3(0.65, 0.8, 0), Vector3.RIGHT, 0.8, 10, Color(0.7, 0.58, 0.32))
+			_disc(st, Vector3(-0.65, 0.8, 0), Vector3.LEFT, 0.8, 10, Color(0.7, 0.58, 0.32))
+		"bales":
+			# pila di balle quadre (3 + 2 + 1)
+			var hc2 := Color(0.82, 0.7, 0.42)
+			for i in 3:
+				_box(st, Vector3(-1.25 + i * 1.25, 0.4, 0), Vector3(1.2, 0.8, 2.3), hc2.lerp(Color(0.72, 0.6, 0.34), rng.randf()))
+			for i in 2:
+				_box(st, Vector3(-0.62 + i * 1.25, 1.2, 0), Vector3(1.2, 0.8, 2.3), hc2.lerp(Color(0.72, 0.6, 0.34), rng.randf()))
+			_box(st, Vector3(0, 2.0, 0), Vector3(1.2, 0.8, 2.3), hc2)
+		"shed":
+			# tettoia aperta con pali di legno e tetto in lamiera, attrezzi e fieno sotto
+			var wood := Color(0.42, 0.32, 0.22)
+			for x in [-3.6, 0.0, 3.6]:
+				for z in [-2.4, 2.4]:
+					_box(st, Vector3(x, 1.8, z), Vector3(0.22, 3.6, 0.22), wood)
+			_box(st, Vector3(0, 3.75, 0), Vector3(8.2, 0.18, 5.6), Color(0.5, 0.5, 0.48), Basis(Vector3.RIGHT, 0.08))
+			_box(st, Vector3(0, 0.12, 0), Vector3(7.6, 0.24, 5.0), Color(0.4, 0.37, 0.32))
+			_box(st, Vector3(-1.8, 0.75, 0.3), Vector3(3.2, 1.3, 3.2), Color(0.8, 0.68, 0.4))
+			_box(st, Vector3(2.0, 0.6, -0.5), Vector3(2.2, 1.0, 1.4), Color(0.55, 0.15, 0.1))
+			_box(st, Vector3(-3.6, 1.8, 0), Vector3(0.12, 3.4, 4.8), Color(0.38, 0.28, 0.2))
+		"woodpile":
+			var lc := Color(0.5, 0.36, 0.22)
+			for row in 3:
+				for i in 4 - row:
+					var y := 0.22 + row * 0.38
+					var x := -0.66 + (i + row * 0.5) * 0.44
+					_cyl(st, Vector3(x, y, -1.1), Vector3(x, y, 1.1), 0.2, 0.2, 6, lc, lc.darkened(0.1))
+					_disc(st, Vector3(x, y, 1.1), Vector3.BACK, 0.2, 6, Color(0.76, 0.62, 0.42))
+		"lamp":
+			_cyl(st, Vector3.ZERO, Vector3(0, 6.0, 0), 0.09, 0.06, 6, Color(0.26, 0.27, 0.28), Color(0.3, 0.31, 0.32))
+			_cyl(st, Vector3(0, 5.9, 0), Vector3(0, 6.1, 1.4), 0.05, 0.05, 4, Color(0.3, 0.31, 0.32), Color(0.3, 0.31, 0.32))
+			_box(st, Vector3(0, 6.0, 1.55), Vector3(0.36, 0.18, 0.7), Color(0.32, 0.33, 0.34))
+		"car":
+			# utilitaria (muso verso +Z): il colore della carrozzeria viene dall'istanza
+			var body := Color(0.92, 0.92, 0.92)
+			var glass := Color(0.12, 0.14, 0.17)
+			var tyre := Color(0.06, 0.06, 0.06)
+			_box(st, Vector3(0, 0.62, 0), Vector3(1.7, 0.62, 4.0), body)
+			_box(st, Vector3(0, 1.15, -0.25), Vector3(1.5, 0.48, 2.1), glass)
+			_box(st, Vector3(0, 1.41, -0.3), Vector3(1.46, 0.06, 1.9), body)
+			for x in [-0.82, 0.82]:
+				for z in [-1.25, 1.3]:
+					_box(st, Vector3(x, 0.32, z), Vector3(0.22, 0.64, 0.64), tyre)
+			_box(st, Vector3(0, 0.6, 2.02), Vector3(1.5, 0.16, 0.05), Color(0.95, 0.95, 0.85))
+			_box(st, Vector3(0, 0.62, -2.02), Vector3(1.5, 0.14, 0.05), Color(0.6, 0.08, 0.06))
+		"slab":
+			# blocco unitario con la base all'origine: parapetti, torrini, lucernari (scala e colore dall'istanza)
+			_box(st, Vector3(0, 0.5, 0), Vector3.ONE, Color(1, 1, 1))
+		"tank":
+			# serbatoio d'acqua sul tetto su quattro gambe
+			for x in [-0.9, 0.9]:
+				for z in [-0.9, 0.9]:
+					_box(st, Vector3(x, 0.8, z), Vector3(0.14, 1.6, 0.14), Color(0.3, 0.3, 0.3))
+			_cyl(st, Vector3(0, 1.6, 0), Vector3(0, 3.6, 0), 1.3, 1.3, 10, Color(0.55, 0.45, 0.35), Color(0.6, 0.5, 0.38))
+			_cone(st, Vector3(0, 3.6, 0), 0.7, 1.35, 10, Color(0.4, 0.4, 0.4), Color(0.45, 0.45, 0.45), rng)
+		"bench":
+			_box(st, Vector3(0, 0.45, 0), Vector3(1.8, 0.08, 0.45), Color(0.45, 0.32, 0.2))
+			_box(st, Vector3(0, 0.75, -0.2), Vector3(1.8, 0.35, 0.06), Color(0.45, 0.32, 0.2))
+			for x in [-0.8, 0.8]:
+				_box(st, Vector3(x, 0.22, 0), Vector3(0.08, 0.45, 0.4), Color(0.2, 0.2, 0.2))
+		"bin":
+			_cyl(st, Vector3.ZERO, Vector3(0, 1.1, 0), 0.35, 0.38, 8, Color(0.2, 0.32, 0.22), Color(0.22, 0.35, 0.24))
+			_disc(st, Vector3(0, 1.1, 0), Vector3.UP, 0.38, 8, Color(0.15, 0.2, 0.16))
+		"trough":
+			_box(st, Vector3(0, 0.35, 0), Vector3(0.9, 0.7, 3.0), Color(0.55, 0.55, 0.53))
+			_box(st, Vector3(0, 0.66, 0), Vector3(0.7, 0.04, 2.8), Color(0.3, 0.38, 0.42))
 		"fence":
 			_box(st, Vector3(0, 0.55, 0), Vector3(0.12, 1.1, 0.12), Color(0.4, 0.32, 0.24))
 			_box(st, Vector3(0, 0.85, 0.5), Vector3(0.06, 0.1, 1.0), Color(0.45, 0.36, 0.27))
 			_box(st, Vector3(0, 0.45, 0.5), Vector3(0.06, 0.1, 1.0), Color(0.45, 0.36, 0.27))
 	var mesh := st.commit()
 	mesh.surface_set_material(0, vc_mat("landmark", 0.88, true))
+	if kind == "lamp":
+		# corpo illuminante emissivo (si nota di notte e con il maltempo)
+		var sl := SurfaceTool.new()
+		sl.begin(Mesh.PRIMITIVE_TRIANGLES)
+		_box(sl, Vector3(0, 5.86, 1.55), Vector3(0.3, 0.05, 0.58), Color(1, 1, 1))
+		sl.commit(mesh)
+		var em := StandardMaterial3D.new()
+		em.albedo_color = Color(1.0, 0.9, 0.7)
+		em.emission_enabled = true
+		em.emission = Color(1.0, 0.82, 0.55)
+		em.emission_energy_multiplier = 3.0
+		mesh.surface_set_material(1, em)
 	_mats[key] = mesh
 	return mesh
 

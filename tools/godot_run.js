@@ -33,7 +33,15 @@ const t0 = Date.now();
   }
   const waited = ((Date.now() - t0) / 1000).toFixed(1);
   if (+waited > 2) console.log('[godot_run] atteso il semaforo ' + waited + ' s');
-  const p = spawn(GODOT, gargs, { stdio: 'inherit', cwd: process.cwd() });
+  // test con finestra (screenshot, misure): finestra fuori dallo schermo e senza rubare il fuoco, così l'utente può
+  // continuare a usare il PC. --visible per vederla (es. node tools/godot_run.js --visible -- ...)
+  let args = gargs.slice();
+  if (!own.includes('--visible') && !args.includes('--headless') && !args.includes('--position')) {
+    const sepI = args.indexOf('--');
+    const at = sepI >= 0 ? sepI : args.length;
+    args.splice(at, 0, '--position', '30000,30000');
+  }
+  const p = spawn(GODOT, args, { stdio: 'inherit', cwd: process.cwd() });
   const killer = setTimeout(() => { console.error('[godot_run] TIMEOUT ' + timeout + ' s, termino Godot'); p.kill(); }, timeout * 1000);
   const done = code => { clearTimeout(killer); release(); process.exit(code == null ? 1 : code); };
   p.on('exit', done); p.on('error', e => { console.error(e); done(1); });

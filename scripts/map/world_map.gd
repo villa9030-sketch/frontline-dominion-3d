@@ -322,6 +322,28 @@ func focus(idx: int) -> void:
 		return
 	camera.fly_to(_centers[idx], minf(camera._goal_dist, 40.0))
 
+## Transizione continua tabellone → battaglia: la telecamera scende sul territorio conteso (la battaglia poi parte
+## dall'alto sullo stesso paesaggio). Restituisce la durata del volo in secondi; ricorda la vista di prima per `rise_from`.
+var _view_before := {}
+func dive_to(idx: int) -> float:
+	if idx < 0 or idx >= _centers.size():
+		return 0.0
+	_view_before = {"t": camera._goal_target, "d": camera._goal_dist, "y": camera._goal_yaw}
+	camera.fly_to(_centers[idx], MapCamera.MIN_DIST + 4.0)
+	return camera._fly_dur if camera.is_flying() else 0.0
+
+## Ritorno dalla battaglia: la vista riparte bassa sul territorio e risale alla posizione di prima della battaglia.
+func rise_from(idx: int) -> void:
+	if idx < 0 or idx >= _centers.size():
+		return
+	var c: Vector3 = _centers[idx]
+	var y: float = float(_view_before.get("y", camera._goal_yaw))
+	camera.set_view(c, MapCamera.MIN_DIST + 4.0, y, true)
+	var d := float(_view_before.get("d", 60.0))
+	var t: Vector3 = _view_before.get("t", c)
+	# la vista di prima, ma non più lontana della vista "media": il territorio appena conteso resta leggibile
+	camera.fly_to(t.lerp(c, 0.5), minf(maxf(d, 34.0), 70.0))
+
 ## Territorio sotto il punto dello schermo (-1 = mare/nulla).
 func territory_at_screen(pos: Vector2) -> int:
 	return int(pick(pos)["idx"])

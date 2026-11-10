@@ -30,6 +30,7 @@ var battle: Node = null
 var battle_setup = null
 var battle_info = null
 var _battle_holder: Node = null
+var _transition := false   # transizione cinematica tabellone ↔ battaglia in corso (input del tabellone bloccato)
 var using_mock := false
 
 # stato dell'interfaccia (come UI nel JS)
@@ -41,7 +42,7 @@ var sel_cards: Array = []
 var targets: Array = []
 var target_set := {}
 var drag = null            # {from, pos0, active}
-var menu_opts := {"faction": 0, "opp": 3, "diff": "veterano", "mode": "conquista", "dist": "regionale", "ask_defense": true, "auto_battles": false, "fog": true}
+var menu_opts := {"faction": 0, "opp": 3, "diff": "veterano", "mode": "conquista", "dist": "regionale", "ask_defense": true, "auto_battles": false, "fog": true, "fog_mode": "light"}
 var modal_kind := ""
 var modal_closable := true
 var _paused_before := false
@@ -229,7 +230,8 @@ func start_game(spectator: bool) -> void:
 				players.append({"faction": i, "human": false, "difficulty": o["diff"]})
 				n += 1
 	var opts := {"players": players, "mode": o["mode"], "distribution": o["dist"], "seed": int(Time.get_unix_time_from_system()) & 0x7fffffff,
-		"ask_defense": o["ask_defense"], "auto_battles": o["auto_battles"], "fog": bool(o.get("fog", true)) and not spectator}
+		"ask_defense": o["ask_defense"], "auto_battles": o["auto_battles"], "fog": bool(o.get("fog", true)) and not spectator,
+		"fog_mode": "none" if spectator else String(o.get("fog_mode", "light"))}
 	var g = _new_game(opts)
 	if g == null:
 		toast("Errore nell'avvio della partita", "bad")
@@ -265,6 +267,7 @@ func scenario_opts(S: Dictionary, fac: int = -1) -> Dictionary:
 	return {"players": players, "mode": String(menu.sf(S, ["mode"], o["mode"])), "distribution": String(menu.sf(S, ["distribution", "dist"], "regionale")),
 		"seed": int(menu.sf(S, ["seed"], int(Time.get_unix_time_from_system()) & 0x7fffffff)),
 		"ask_defense": o["ask_defense"], "auto_battles": o["auto_battles"], "fog": bool(menu.sf(S, ["fog"], o.get("fog", true))),
+		"fog_mode": String(menu.sf(S, ["fog_mode"], "full" if bool(menu.sf(S, ["fog"], false)) else "none")),
 		"scenario": String(S.get("id", ""))}
 
 func make_scenario_game(S: Dictionary, _preview: bool = false, fac: int = -1):
@@ -479,10 +482,23 @@ func estimate(t: int) -> int:
 	var e = gcall("estimate_forces", [h(), t], -1)
 	return int(e) if e != null else -1
 
-## Testo delle forze per un territorio non visibile.
+## Testo delle forze per un territorio non visibile ("forze stimate circa 10–15" / "forze sconosciute").
 func fog_text(t: int) -> String:
 	var e := estimate(t)
-	return ("forze stimate ≈%d" % e) if e >= 0 else "forze sconosciute"
+	if e < 0:
+		return "forze sconosciute"
+	var txt = gcall("estimate_text", [h(), t], "circa %d" % e)
+	return "forze stimate " + String(txt)
+
+## Stima leggibile delle forze di un territorio non visibile ("circa 10–15", "sconosciute").
+func estimate_text(t: int) -> String:
+	return String(gcall("estimate_text", [h(), t], "sconosciute"))
+
+## Logoramento di un territorio (turni al recupero, 0 = fresco).
+func worn_of(t: int) -> int:
+	if game == null or t < 0:
+		return 0
+	return int(game.terr[t].get("worn", 0))
 
 ## Stelle di veterania di un territorio (0..3).
 func vet_of(t: int) -> int:
@@ -545,6 +561,8 @@ func propose_pact(to: int) -> void:
 
 func card_targets(op: String) -> Array:
 	var out := []
+	if String(Data.OPS.get(op, {}).get("target", "")) == "self":
+		return gcall("territories_of", [h()], [])   # divisione falsa / silenzio radio: un proprio territorio
 	for tr in game.terr:
 		if int(tr["owner"]) == h():
 			continue
@@ -629,7 +647,7 @@ func _process(dt: float) -> void:
 		_check_autosave()
 	_update_music()
 	_update_drag()
-	if game.pending_battle != null and battle == null and modal_kind != "battle" and modal_kind != "help":
+	if game.pending_battle != null and battle == null and modal_kind != "battle" and modal_kind != "help" and not _transition:
 		if modal_kind == "pact":
 			_defer_pact_offer()
 		show_battle_prompt()
@@ -1148,7 +1166,7 @@ func guide_state() -> Dictionary:
 	var end_alt := {"text": "Fine turno  ⏎", "act": "end-turn", "tip": "Termina subito il turno (Invio): salta le fasi rimaste e giocano le IA"}
 	if mode != null and mode["type"] == "card":
 		var op: Dictionary = Data.OPS[mode["op"]]
-		st["text"] = "[b]%s[/b]: clicca un territorio nemico [color=#ff8a6a]evidenziato in rosso[/color]." % op["name"]
+		st["text"] = ("[b]%s[/b]: clicca un tuo territorio [color=#ff8a6a]evidenziato[/color]." if String(op.get("target", "")) == "self" else "[b]%s[/b]: clicca un territorio nemico [color=#ff8a6a]evidenziato in rosso[/color].") % op["name"]
 		st["sub"] = String(op.get("desc", ""))
 		st["main"] = {"text": "Annulla", "act": "cancel-mode", "kind": "normal", "tip": "Annulla la carta (Esc)"}
 		return st
@@ -1578,7 +1596,10 @@ func act(a: String, ds: Dictionary = {}) -> void:
 		"m-dist": o["dist"] = ds["v"]; menu.refresh()
 		"m-ask": o["ask_defense"] = not o["ask_defense"]; menu.refresh()
 		"m-auto": o["auto_battles"] = not o["auto_battles"]; menu.refresh()
-		"m-fog": o["fog"] = not bool(o.get("fog", true)); menu.refresh()
+		"m-fog":
+			o["fog_mode"] = String(ds.get("v", "light"))
+			o["fog"] = o["fog_mode"] != "none"
+			menu.refresh()
 		"pact": propose_pact(int(ds["p"]))
 		"pact-yes": answer_pact_offer(true)
 		"pact-no": answer_pact_offer(false)
@@ -1692,7 +1713,7 @@ func play_op(op: String) -> void:
 	if sel_cards.size() != 3 or not gcall("is_valid_set", [cards], false):
 		toast("Seleziona un tris valido di carte", "bad")
 		return
-	if Data.OPS[op]["target"] == "enemy":
+	if Data.OPS[op]["target"] == "enemy" or Data.OPS[op]["target"] == "self":
 		set_mode({"type": "card", "op": op, "cards": sel_cards.duplicate()})
 		return
 	var r = gcall("play_cards", [h(), sel_cards.duplicate(), op, sel])
@@ -1711,7 +1732,7 @@ func toggle_pause() -> void:
 
 # ================================================================== input del tabellone
 func _input_blocked() -> bool:
-	return game == null or battle != null or modal_kind != ""
+	return game == null or battle != null or modal_kind != "" or _transition
 
 func _on_map_clicked(t: int, button: int, _shift: bool) -> void:
 	if _input_blocked():
@@ -2247,8 +2268,22 @@ func battle_manual() -> void:
 		battle_auto()
 		return
 	close_modal(true)
+	# transizione continua: la telecamera del tabellone scende sul territorio, dissolvenza a nero, poi la battaglia
+	# parte dall'alto sullo stesso paesaggio (introduzione) e scende sul campo
+	var terr_t := int(battle_info["terr"]) if battle_info is Dictionary and battle_info.has("terr") else -1
+	if _cinematic_ok() and terr_t >= 0:
+		_transition = true
+		var dur: float = map.dive_to(terr_t)
+		if dur > 0.45:
+			await get_tree().create_timer(dur - 0.45).timeout
+		await SceneFade.of(self).fade_to(1.0, 0.45)
+		_transition = false
+		if game == null or game.pending_battle == null:
+			SceneFade.of(self).fade_to(0.0, 0.5)
+			return
 	var setup = game.start_manual_battle()
 	if setup == null or (setup is Dictionary and setup.is_empty()):
+		SceneFade.of(self).fade_to(0.0, 0.5)
 		return
 	var ps = load(BATTLE_SCENE)
 	var inst: Node = ps.instantiate() if ps is PackedScene else null
@@ -2277,6 +2312,8 @@ func battle_manual() -> void:
 	var cam := _find_camera(battle)
 	if cam != null:
 		cam.make_current()
+	if SceneFade.of(self).opacity() > 0.0:
+		SceneFade.of(self).fade_to(0.0, 1.1)
 	Sfx.play("battle")
 	music("battle")
 
@@ -2294,7 +2331,15 @@ func _on_battle_finished(res: Dictionary) -> void:
 
 func _after_battle(res) -> void:
 	var setup = battle_setup
+	var terr_t := int(battle_info["terr"]) if battle_info is Dictionary and battle_info.has("terr") else -1
+	var cine := _cinematic_ok() and terr_t >= 0
+	if cine:
+		# la battaglia ha già alzato la telecamera: dissolvenza a nero, poi il tabellone riparte basso sul territorio e risale
+		await SceneFade.of(self).fade_to(1.0, 0.4)
 	_end_battle_scene()
+	if cine and map != null and map.has_method("rise_from"):
+		map.rise_from(terr_t)
+		SceneFade.of(self).fade_to(0.0, 0.9)
 	if game == null or setup == null:
 		return
 	if res == null or not (res is Dictionary):
@@ -2305,6 +2350,10 @@ func _after_battle(res) -> void:
 	if _elim_pending and game.over == null:
 		_elim_pending = false
 		show_eliminated()
+
+## Transizioni cinematiche tabellone ↔ battaglia: solo con il tabellone 3D e fuori dai test automatici (--script).
+func _cinematic_ok() -> bool:
+	return map_is_3d and map != null and map.has_method("dive_to") and not OS.get_cmdline_args().has("--script")
 
 func _end_battle_scene() -> void:
 	if battle != null and is_instance_valid(battle):

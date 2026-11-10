@@ -61,7 +61,8 @@ Se un'IA ti attacca compare il **prompt di difesa** (forze nemiche stimate, i tu
 i salvataggi mostrano «Turno N». I salvataggi della versione in tempo reale non sono compatibili.
 
 ## Menu iniziale
-- **Continua** riprende l'ultimo salvataggio; **Nuova campagna** sceglie fazione, avversari, difficoltà, modalità, nebbia.
+- **Continua** riprende l'ultimo salvataggio; **Nuova campagna** sceglie fazione, avversari, difficoltà, modalità, nebbia
+  (nessuna / **leggera** (consigliata: lontano solo stime «circa 10–15») / totale).
 - **Scenari**: operazioni già impostate con forze di partenza, regole e obiettivi propri (vedi sotto).
 - Le **quattro potenze** in alto a destra mostrano il mezzo tipico di ogni fazione in 3D (passa il mouse per farlo ruotare,
   clic per iniziare una campagna con quella fazione); anche le schede fazione della nuova campagna hanno l'anteprima 3D.
@@ -111,7 +112,10 @@ la schermata finale riporta lo scenario e il motivo della vittoria.
 - Economia (denaro, petrolio, acciaio, manodopera), 6 edifici, 4 livelli tecnologici, mercato internazionale.
 - **Tabellone a turni** (Rifornimento › Attacco › Spostamento), un attacco e uno spostamento per turno, fortificazioni a livelli.
 - Rifornimenti, petrolio, tregua iniziale, milizia, occupazione e riorganizzazione dopo le conquiste.
-- Carte Comando (rinforzi, missile, sabotaggio, golpe), rinforzi periodici e bonus dei continenti.
+- Carte Comando (rinforzi, missile, sabotaggio, golpe) e **carte inganno** (divisione falsa, silenzio radio, ricognizione); bonus dei continenti.
+- **La campagna decide la battaglia** (`docs/omogeneita.md`): battaglie di 5 minuti con **obiettivi** dal territorio (QG, edifici, ponti, alture),
+  **rinforzi** dai territori vicini a metà battaglia, supporto aereo solo con aeroporto, tiro navale con porto, **ritirata ordinata**,
+  comando diretto +10% ed esperienza doppia, **logoramento** (−15% per un turno dopo ogni battaglia).
 - **Veterani** (fino a 3 stelle), **nebbia di guerra**, **patti di non aggressione** con le IA.
 - Battaglie 3D: schieramento iniziale, minimappa, terreni diversi (città, foresta, deserto, montagna, artico, pianura, costa),
   ora del giorno e meteo, esplosioni, fumo, relitti, danni visibili sui mezzi.
@@ -143,6 +147,8 @@ node tools/godot_run.js --timeout=600 -- --headless --path . --script tests/test
 node tools/godot_run.js --timeout=600 -- --headless --path . --script tests/test_fase3.gd
 node tools/godot_run.js --timeout=600 -- --headless --path . --script tests/test_scenarios.gd
 node tools/godot_run.js --timeout=600 -- --headless --path . --script tests/test_battle.gd
+node tools/godot_run.js --timeout=600 -- --headless --path . --script tests/test_omogeneita.gd
+node tools/godot_run.js --timeout=900 -- --headless --path . --script tests/test_tactics.gd
 node tools/godot_run.js --timeout=900 -- --headless --path . --script tests/sim.gd
 node tools/godot_run.js --timeout=900 -- --headless --path . --script tests/sim.gd -- --fog=1
 node tools/godot_run.js --timeout=900 -- --path . --script tests/test_flow.gd

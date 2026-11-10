@@ -303,8 +303,45 @@ func _do_cards() -> void:
 		if best >= 0 and bs >= 10.0 and _ok(g.play_cards(idx, fs, "golpe", best)):
 			stats["cards"] += 1
 			return
+	# carte inganno (docs/omogeneita.md §5): solo con la nebbia, e non sempre (i rinforzi restano la scelta principale)
+	if bool(g.get("fog")) and rng.randf() < 0.5 and _do_deceit(fs):
+		stats["cards"] += 1
+		return
 	if _ok(g.play_cards(idx, fs, "rinforzi", -1)):
 		stats["cards"] += 1
+
+
+## Ricognizione sul bersaglio di maggior valore che non vedo; silenzio radio sulla frontiera più minacciata se debole;
+## divisione falsa su una frontiera debole accanto a un nemico forte. true se ha giocato.
+func _do_deceit(fs) -> bool:
+	var g = game
+	var best := -1
+	var bs := 0.0
+	for t in own:
+		for j in Data.TERRITORIES[t]["adj"]:
+			var tr: Dictionary = g.terr[j]
+			if tr["owner"] < 0 or tr["owner"] == idx or g.has_pact(idx, tr["owner"]):
+				continue
+			if g.visible_forces(idx, j) != null or g.has_intel(idx, j):
+				continue
+			var v := _value(j)
+			if v > bs:
+				bs = v; best = j
+	if best >= 0 and bs >= 9.0 and _ok(g.play_cards(idx, fs, "ricognizione", best)):
+		return true
+	var weak := -1
+	var wr := 0.0
+	for t in own:
+		if frontier[t] == 0 or int(g.terr[t].get("silence", 0)) > 0 or int(g.terr[t].get("decoy", 0)) > 0:
+			continue
+		var r: float = threat[t] / maxf(1.0, own_pow[t])
+		if r > wr:
+			wr = r; weak = t
+	if weak >= 0 and wr > 1.2:
+		var op := "silenzio" if wr > 2.0 else "finta"
+		if _ok(g.play_cards(idx, fs, op, weak)):
+			return true
+	return false
 
 
 func _do_diplomacy() -> void:

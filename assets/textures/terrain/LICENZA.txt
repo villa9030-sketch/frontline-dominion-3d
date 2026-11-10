@@ -1,0 +1,9 @@
+Texture del terreno — fonte: Poly Haven (https://polyhaven.com), licenza CC0 1.0 (pubblico dominio).
+Uso libero anche commerciale, nessun obbligo di attribuzione (citiamo comunque Poly Haven nei crediti).
+
+grass_ground      https://polyhaven.com/a/grass_ground      2K  colore + normal (OpenGL)
+brown_mud_dry     https://polyhaven.com/a/brown_mud_dry     2K  colore + normal (OpenGL)
+aerial_rocks_02   https://polyhaven.com/a/aerial_rocks_02   1K  colore + normal (OpenGL)
+snow_02           https://polyhaven.com/a/snow_02           1K  colore + normal (OpenGL)
+aerial_sand       https://polyhaven.com/a/aerial_sand       1K  colore + normal (OpenGL)
+forest_leaves_02  https://polyhaven.com/a/forest_leaves_02  1K  colore + normal (OpenGL)

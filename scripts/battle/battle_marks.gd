@@ -80,7 +80,7 @@ func _build_index() -> void:
 			continue
 		var mi := ch as MultiMeshInstance3D
 		var mm := mi.multimesh
-		if mm == null or mm.mesh == null:
+		if mm == null or mm.mesh == null or mi.has_meta("lod_lo"):
 			continue
 		var kind := ""
 		var nm := String(mi.name)
@@ -111,7 +111,9 @@ func _build_index() -> void:
 			if xf.basis.get_scale().length() < 0.01:
 				continue
 			var it := {"mm": mm, "i": i, "kind": kind, "p": p, "xf": xf, "stage": 0, "alive": true, "hp": 1.0, "hp0": 1.0,
-				"col": mm.get_instance_color(i) if mm.use_colors else Color(1, 1, 1), "size": Vector3.ZERO, "lk": lk2, "h": mm.mesh.get_aabb().size.y * xf.basis.get_scale().y}
+				"col": mm.get_instance_color(i) if mm.use_colors else Color(1, 1, 1), "size": Vector3.ZERO, "lk": lk2, "h": mm.mesh.get_aabb().size.y * xf.basis.get_scale().y,
+				"twin": mi.get_meta("lod_twin") if mi.has_meta("lod_twin") else null,   # livello di dettaglio lontano dello stesso albero
+				"twin2": mi.get_meta("lod_shadow") if mi.has_meta("lod_shadow") else null}   # sagoma che proietta l'ombra
 			match kind:
 				"bld":
 					it["hp"] = float(HP[lk2]); it["hp0"] = it["hp"]
@@ -471,6 +473,9 @@ func _set_tree_angle(it: Dictionary, axis: Vector3, ang: float, final: bool) -> 
 	if final:
 		p.y -= 0.35
 	mm.set_instance_transform(int(it["i"]), Transform3D(b, p))
+	for tw in ["twin", "twin2"]:
+		if it.get(tw) != null:
+			(it[tw] as MultiMesh).set_instance_transform(int(it["i"]), Transform3D(b, p))
 
 func _update_falling(dt: float) -> void:
 	var i := 0
@@ -499,6 +504,10 @@ func _flatten(it: Dictionary) -> void:
 		b = Basis(b.z.normalized(), 1.25 * (1.0 if _rng.randf() < 0.5 else -1.0)) * b
 		mm.set_instance_transform(int(it["i"]), Transform3D(b, xf.origin - Vector3(0, 0.1, 0)))
 	else:
-		mm.set_instance_transform(int(it["i"]), Transform3D(b.scaled_local(Vector3(1.15, 0.28, 1.15)), xf.origin - Vector3(0, 0.05, 0)))
+		var fxf := Transform3D(b.scaled_local(Vector3(1.15, 0.28, 1.15)), xf.origin - Vector3(0, 0.05, 0))
+		mm.set_instance_transform(int(it["i"]), fxf)
+		for tw in ["twin", "twin2"]:
+			if it.get(tw) != null:
+				(it[tw] as MultiMesh).set_instance_transform(int(it["i"]), fxf)
 	if not _silent:
 		fx.dust(xf.origin + Vector3(0, 0.3, 0), 0.8)

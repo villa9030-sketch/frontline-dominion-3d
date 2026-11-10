@@ -62,6 +62,7 @@ var _alert_sfx_t := -100.0
 var mood := "pomeriggio"
 var mood_text := ""
 var quality := "alto"
+var ultra := false               # qualità "ultra": come "alto" più illuminazione globale (SSIL + SDFGI)
 var _shadow_k := 1.0
 var _occ_i := 0
 var _end_wait := 0.0
@@ -79,6 +80,9 @@ var intro_t := -1.0            # >= 0 durante l'introduzione cinematica
 var _intro_a := {}             # inquadratura iniziale {t, d, y}
 var _intro_b := {}             # inquadratura finale (quella di gioco)
 var _intro_deploy := false
+const OUTRO_T := 1.6           # uscita cinematica: la telecamera risale prima di tornare al tabellone
+var _outro_t := -1.0
+var _outro_a := {}
 var _last_order_t := -100.0
 var _last_kill_p := Vector3.INF
 var _last_kill_t := -100.0
@@ -95,7 +99,8 @@ var _wood_t := 0.0
 # fase 5: battaglia tattica (visibilità, pedine a distanza, anelli, imboscate)
 const ICON_NEAR := 150.0       # distanza (m) da cui compaiono le pedine tattiche
 const ICON_FAR := 290.0        # oltre: solo pedine piene
-const MODEL_FAR := 560.0       # oltre (e con pedina piena) il modello 3D è nascosto
+const MODEL_FAR := 560.0
+const CHIP_NEAR := 55.0        # distanza (m) da cui sopra le unità compare il gettone con tipo e integrità       # oltre (e con pedina piena) il modello 3D è nascosto
 const MODEL_FAR_INF := 400.0
 var _tactical := false         # la sim ha la visibilità tattica (visible_to)
 var floaters: Array = []       # scritte fluttuanti {p: Vector3, text, col: Color, t, T, big}
@@ -117,6 +122,11 @@ var photo := false              # modalità foto (F10): battaglia in pausa, inte
 var _photo_was_paused := false
 var _photo_attr: CameraAttributesPractical
 var _photo_dof := 0.0
+# profondità di campo "tilt-shift" della vista di gioco (effetto plastico): forte da camera alta, quasi nulla da vicino
+var _tilt_attr: CameraAttributesPractical
+var _tilt_k := 0.0
+var strat: BattleStrategic       # vista strategica: fronte, frecce, obiettivi (zoom continuo)
+var _tac_dist := 150.0           # ultima distanza tattica (per tornarci con Tab)               # per qualità: 0 spenta (basso), medio 0.8, alto 1
 var _photo_shot_pending := false
 var _booms: Array = []          # demo (--boom=t1,t2): esplosioni di prova sul bersaglio della telecamera
 var _boom_frames: Array = []    # demo (--boomf=f1,f2): idem, per numero di frame (screenshot deterministici)
@@ -172,6 +182,8 @@ func start(s: Dictionary) -> void:
 	weather.name = "Weather"
 	add_child(weather)
 	weather.setup(self, world_env.environment, sun, _sky_mat, _env_base, terrain.terrain_mat, fx)
+	fx.set_lighting(sun.light_color, sun.light_energy, world_env.environment.ambient_light_color)   # fumo illuminato come la scena
+	terrain.terrain_mat.set_shader_parameter("horizon_col", world_env.environment.fog_light_color)   # foschia d'orizzonte del paesaggio
 	marks = BattleMarks.new()
 	marks.name = "Marks"
 	add_child(marks)
@@ -224,6 +236,7 @@ func start(s: Dictionary) -> void:
 	var mus = get_node_or_null("/root/Music")
 	if mus != null and mus.has_method("play"):
 		mus.call("play", "battle")
+	strat = BattleStrategic.new(self)
 	hud = BattleHud.new()
 	add_child(hud)
 	hud.build(self)
@@ -390,6 +403,7 @@ func _settings_value(key: String, def):
 
 func _read_settings() -> void:
 	quality = String(_settings_value("quality", "alto"))
+	ultra = quality == "ultra"
 	if not quality in ["basso", "medio", "alto"]:
 		quality = "alto"
 	cam.speed_mul = float(_settings_value("camera_speed", 1.0))
@@ -400,13 +414,28 @@ func _read_settings() -> void:
 func _on_setting_changed(key) -> void:
 	if sim == null:
 		return
-	if String(key) in ["quality", "camera_speed", "edge_scroll"]:
+	if String(key) in ["quality", "upscale", "camera_speed", "edge_scroll"]:
 		_read_settings()
 
 func _apply_quality() -> void:
 	var env := world_env.environment
 	env.ssao_enabled = quality == "alto"
 	env.glow_enabled = quality != "basso"
+	# ultra: luce indiretta in spazio schermo (rimbalzi di colore tra terreno, mezzi ed edifici) e SDFGI
+	env.ssil_enabled = ultra
+	if ultra:
+		env.ssil_radius = 6.0
+		env.ssil_intensity = 0.9
+		env.ssil_sharpness = 0.98
+		RenderingServer.environment_set_ssil_quality(RenderingServer.ENV_SSIL_QUALITY_MEDIUM, true, 0.5, 4, 50.0, 300.0)
+	env.sdfgi_enabled = ultra and _shot_arg("sdfgi", "1") != "0"
+	if env.sdfgi_enabled:
+		env.sdfgi_use_occlusion = true
+		env.sdfgi_cascades = 4
+		env.sdfgi_min_cell_size = 0.4
+		env.sdfgi_max_distance = 410.0
+		env.sdfgi_energy = 0.7
+		env.sdfgi_bounce_feedback = 0.4
 	match quality:
 		"alto":
 			sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
@@ -418,6 +447,15 @@ func _apply_quality() -> void:
 			sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 			_shadow_k = 0.55
 	terrain.set_density({"alto": 1.0, "medio": 0.6, "basso": 0.3}[quality])
+	# tilt-shift: spento su basso; sfocatura a qualità bassa su medio (costo ~0.3 ms), media su alto
+	_tilt_k = {"alto": 1.0, "medio": 0.8, "basso": 0.0}[quality]
+	fx.detail = {"alto": 1.0, "medio": 0.7, "basso": 0.45}[quality]
+	if _shot_arg("dof", "") != "":
+		_tilt_k = float(_shot_arg("dof", "0"))
+	if _tilt_k > 0.0:
+		RenderingServer.camera_attributes_set_dof_blur_quality(RenderingServer.DOF_BLUR_QUALITY_MEDIUM if quality == "alto" else RenderingServer.DOF_BLUR_QUALITY_LOW, quality == "alto")
+		RenderingServer.camera_attributes_set_dof_blur_bokeh_shape(RenderingServer.DOF_BOKEH_CIRCLE)
+	_update_tilt()
 	if weather != null:
 		weather.quality_k = {"alto": 1.0, "medio": 0.6, "basso": 0.3}[quality]
 	# MSAA: lo gestisce Settings se c'è; altrimenti la battaglia lo imposta e lo ripristina all'uscita
@@ -456,15 +494,25 @@ func _demo_setup(kind: String) -> Dictionary:
 	# --side=1: il giocatore comanda il difensore; --fort=N: fortificazioni del difensore (trincee, mine, bunker) di livello N
 	var hside := int(_shot_arg("side", "0")) if human else -1
 	var fl := int(_shot_arg("fort", "0"))
-	return {
+	# omogeneità (docs/omogeneita.md): --buildings=fabbrica,porto --hq=1 --reinf=1 (rinforzi a 20 s) per vedere obiettivi e rinforzi
+	var bl: Array = []
+	for bk in _shot_arg("buildings", "").split(","):
+		if bk != "":
+			bl.append(bk)
+	var s := {
 		"terrIdx": 0, "terrain": tk, "terrName": _shot_arg("name", "Battaglia di prova — " + String(T["name"])), "sea": sea, "seed": sd,
 		"att": {"player": fa, "faction": fa, "name": Data.FACTIONS[fa]["name"], "color": Data.faction_color(fa), "forces": f0,
-			"mods": {"atk": 1.0, "unit": T["mul"], "hp": {}}, "human": human and hside == 0, "vet": va},
+			"mods": {"atk": 1.0, "unit": T["mul"], "hp": {}}, "human": human and hside == 0, "vet": va, "manual": human and hside == 0},
 		"def": {"player": fd, "faction": fd, "name": Data.FACTIONS[fd]["name"], "color": Data.faction_color(fd), "forces": f1,
 			"mods": {"atk": float(T["def"]), "unit": T["mul"], "hp": {}}, "human": human and hside == 1, "bunkers": D[2], "vet": vd,
-			"fort": {"trench": fl, "mines": fl, "bunker": mini(fl, 1)}},
+			"fort": {"trench": fl, "mines": fl, "bunker": mini(fl, 1)}, "manual": human and hside == 1},
 		"support": {"att": D[3], "def": D[4]},
+		"buildings": bl, "hq": _shot_arg("hq", "0") == "1",
 	}
+	if _shot_arg("reinf", "0") == "1":
+		s["att"]["reinf"] = {"forces": {"inf": 4, "tank": 2}, "t": 20.0, "dir": -1}
+		s["def"]["reinf"] = {"forces": {"inf": 3, "tank": 1}, "t": 25.0, "dir": 1}
+	return s
 
 func _demo_prepare() -> void:
 	if _shot_arg("shadow", "1") == "0":
@@ -558,6 +606,8 @@ func _demo_prepare() -> void:
 		for bf in _shot_arg("boomf", "").split(","):
 			_boom_frames.append(int(bf))
 	# --flare=1: razzo illuminante sopra il bersaglio della telecamera (screenshot notturni)
+	if _shot_arg("tab", "0") == "1":
+		toggle_strategic.call_deferred()   # demo: prova del tasto Tab (vista strategica)
 	if _shot_arg("flare", "0") == "1":
 		var fs := BattleTerrain.world_to_sim(cam._t_target.x, cam._t_target.z)
 		sim.add_flare(fs.x + 120.0, fs.y, 0)
@@ -1366,7 +1416,12 @@ func _update_views(dt: float) -> void:
 				var tp := _target_point(u.otgt)
 				if not cam.is_position_behind(tp):
 					dst = cam.unproject_position(tp)
-			screen_list.append([u, sp, rad, hov, dst, v["occ"] and icon_k < 0.5, icon_k, conc])
+			# Fase 5: gettone dell'unità già a media distanza (tipo + integrità leggibili da lontano), poi pedina piena
+			var chip_k := maxf(icon_k, 0.92 * smoothstep(CHIP_NEAR, CHIP_NEAR + 35.0, depth))
+			# velivoli: gettone anche da vicino (sono piccoli e veloci, e in quota non possono essere coperti dal suolo)
+			if u.air:
+				chip_k = maxf(chip_k, 0.75)
+			screen_list.append([u, sp, rad, hov, dst, v["occ"] and icon_k < 0.5 and not u.air, chip_k, conc, icon_k])
 
 ## Movimento dei mezzi terrestri (solo vista): ruote che girano e cingoli che scorrono + fango che si accumula (parametri per
 ## istanza dello scafo, UnitModels.set_motion), beccheggio con accelerazioni/frenate (molla smorzata), rollio in curva,
@@ -1426,7 +1481,15 @@ func _vehicle_motion(u: BattleSim.Unit, v: Dictionary, spd: float, dt: float, p:
 				var m0 := models[0] as Node3D
 				var L: float = float(m0.get_meta("length", 7.0)) * m0.scale.x
 				var vd := Vector3(u.vx, 0, u.vy).normalized()
-				fx.dust(p - vd * L * 0.42 + Vector3(randf_range(-1.2, 1.2), 0.3, randf_range(-1.2, 1.2)), 0.8 + spd_m * 0.08)
+				var back := p - vd * L * 0.38
+				if sim.tkey == "urbano" and terrain.inside_building(back.x, back.z):
+					pass   # sotto un tetto (unità dentro un isolato): la polvere attraverserebbe il solaio
+				elif u.type in ["tank", "art", "aa"]:
+					# cingoli: polvere da entrambi i lati, più densa con la velocità (poca sull'asfalto)
+					var side := vd.cross(Vector3.UP) * L * 0.2
+					fx.track_dust(back + side, back - side, (0.7 + spd_m * 0.07) * (0.55 if sim.tkey == "urbano" else 1.0))
+				else:
+					fx.dust(back + Vector3(randf_range(-1.2, 1.2), 0.3, randf_range(-1.2, 1.2)), 0.8 + spd_m * 0.08)
 	return Basis(Vector3.RIGHT, float(v["gp"])) * Basis(Vector3.BACK, float(v["groll"]))
 
 ## Velivoli (solo vista): ombra a terra che segue il mezzo e scie di condensazione dei caccia.
@@ -1850,6 +1913,31 @@ func _consume_fx(silent: bool) -> void:
 					_start_jet(e)
 			"bomb":
 				_on_bomb(e, silent)
+			# omogeneità (docs/omogeneita.md): obiettivi, rinforzi, ritirata
+			"objective":
+				if not silent:
+					var ow := BattleTerrain.sim_to_world(float(e["x"]), float(e["y"]))
+					var op := Vector3(ow.x, terrain.height(ow.x, ow.y) + 2.0, ow.y)
+					var mine: bool = sim.hs < 0 or int(e["side"]) == sim.hs
+					float_text(op, String(e["name"]).to_upper(), side_color(int(e["side"])).lightened(0.2), true, 2.2)
+					if sim.hs >= 0:
+						toast(("Obiettivo conquistato: " if mine else "Obiettivo perduto: ") + String(e["name"]), Color(0.6, 1.0, 0.6) if mine else Color(1.0, 0.6, 0.5))
+						_sfx("capture" if mine else "alert", 0.3)
+			"reinf":
+				if not silent:
+					var rw := BattleTerrain.sim_to_world(float(e["x"]), float(e["y"]))
+					pings.append({"p": Vector3(rw.x, terrain.height(rw.x, rw.y) + 2.0, rw.y), "t": 0.0, "col": side_color(int(e["side"]))})
+					if sim.hs >= 0:
+						var mine2: bool = int(e["side"]) == sim.hs
+						toast(("Rinforzi arrivati dal territorio vicino: %d unità" if mine2 else "Rinforzi nemici in campo: %d unità") % int(e["n"]), Color(0.6, 1.0, 0.6) if mine2 else Color(1.0, 0.7, 0.4))
+				for u in sim.units:
+					if not u.dead and not views.has(u.id):
+						_make_view(u)
+			"escape":
+				_on_kill(e, true)   # il reparto lascia il campo: via dalla vista, senza relitto
+			"retreat":
+				if not silent and sim.hs >= 0:
+					toast("Ritirata ordinata: i reparti ripiegano verso il bordo" if int(e["side"]) == sim.hs else "Il nemico si ritira!", Color(1.0, 0.85, 0.5))
 
 # ---------------------------------------------------------------------------- abilità: fumo e supporto aereo
 var _smoke_plumes := 0
@@ -1970,6 +2058,8 @@ func _on_fire(e: Dictionary) -> void:
 		fx.muzzle(a, ad, 2.2)
 		fx.light(a, 3.0, 12.0, 0.12)
 		_recoil(u, 1.4)
+		if (a - cam.global_position).length() < 320.0:
+			fx.blast_dust(Vector3(a.x, terrain.height(a.x, a.z), a.z), Vector3(ad.x, 0, ad.z).normalized(), 1.3)
 		if V != null and V.has_method("gun_blast") and _vfx_near(a, 260.0):
 			V.gun_blast(self, a, ad, 1.5, terrain.height(a.x, a.z))
 		return
@@ -2008,6 +2098,9 @@ func _on_fire(e: Dictionary) -> void:
 			fx.tracer(a, b, maxf(0.06, dist / 900.0), 0.16, 7.0, Color(1.0, 0.8, 0.5, 1.0))
 			_delay(dist / 900.0, "hit_big" if not t.air else "hit", b, 1.0)
 			_recoil(u, 1.0)
+			if (a - cam.global_position).length() < 300.0:
+				var g := a + d * 2.5
+				fx.blast_dust(Vector3(g.x, terrain.height(g.x, g.z), g.z), Vector3(d.x, 0, d.z).normalized(), 1.0)
 			if V != null and V.has_method("gun_blast") and _vfx_near(a, 240.0):
 				V.gun_blast(self, a, d, 1.0, terrain.height(a.x, a.z))
 		"aa":
@@ -2303,6 +2396,9 @@ func _process(delta: float) -> void:
 		_wood_t = 0.15
 	weather.update(dt, frozen or photo, cam, cam.dist)
 	marks.update(dt, frozen or photo)
+	_update_tilt()
+	if strat != null:
+		strat.update(delta, cam.dist)
 	_pt(6)
 	sun.directional_shadow_max_distance = clampf(cam.dist * 2.2 + 40.0, 120.0, 400.0) * _shadow_k
 	# vista d'insieme: niente ombre (le cascate molto ampie scuriscono il suolo a fasce e costano), le pedine bastano
@@ -2381,7 +2477,11 @@ func _fps_probe(delta: float) -> void:
 	_fps_acc[0] += delta
 	_fps_acc[1] += 1
 	_fps_acc[2] = maxf(_fps_acc[2], delta)
+	var rid := get_viewport().get_viewport_rid()
+	_fps_acc[3] += RenderingServer.viewport_get_measured_render_time_gpu(rid)
 	if _fps_acc[0] >= 5.0:
+		if _prof == 1:
+			print("[gpu] media %.2f ms/frame  qualità %s%s" % [_fps_acc[3] / maxf(1.0, _fps_acc[1]), "ultra" if ultra else quality, "" if get_viewport().scaling_3d_mode != Viewport.SCALING_3D_MODE_FSR2 else " +FSR2"])
 		var n := 0
 		for u in sim.units:
 			if not u.dead: n += 1
@@ -2450,9 +2550,20 @@ func _check_end(dt: float) -> void:
 			_end_wait = 1e9
 	if sim.done and not _emitted and _msg_shown:
 		_end_t += dt
-		if _end_t >= _end_wait or _continue:
-			_emitted = true
-			finished.emit(sim.result)
+		if (_end_t >= _end_wait or _continue) and _outro_t < 0.0:
+			# uscita: la telecamera risale verso il cielo (il tabellone riparte dallo stesso punto), poi il risultato
+			_outro_t = 0.0
+			_outro_a = {"t": cam.target, "d": cam.dist, "y": cam.yaw}
+			cam.keys_enabled = false
+			cam.edge_pan = false
+		if _outro_t >= 0.0:
+			_outro_t += dt
+			var f := clampf(_outro_t / OUTRO_T, 0.0, 1.0) if (OUTRO_T > 0.0 and not _demo) else 1.0
+			var e := f * f * (3.0 - 2.0 * f)
+			cam.place(_outro_a["t"], lerpf(float(_outro_a["d"]), cam.max_dist, e), float(_outro_a["y"]))
+			if f >= 1.0:
+				_emitted = true
+				finished.emit(sim.result)
 
 ## Pulsante "Continua" del riepilogo finale.
 func continue_now() -> void:
@@ -2517,11 +2628,47 @@ func set_photo(on: bool) -> void:
 	else:
 		cam.set_photo(false)
 		cam.attributes = null
+		_update_tilt()
 		hud.set_photo(false)
 		if not deploying:
 			sim.paused = _photo_was_paused
 	if audio != null and audio.has_method("set_photo"):
 		audio.set_photo(on)
+
+## Tab: dalla vista tattica a quella strategica (in alto sopra il punto sotto il cursore) e ritorno alla distanza tattica di prima.
+func toggle_strategic() -> void:
+	var mp := get_viewport().get_mouse_position()
+	var g := terrain.raycast(cam.project_ray_origin(mp), cam.project_ray_normal(mp))
+	if cam._t_dist < BattleStrategic.K_START:
+		_tac_dist = cam._t_dist
+		cam.go_to(g if g.x != INF else cam._t_target, maxf(BattleStrategic.K_FULL + 80.0, cam.max_dist * 0.75))
+	else:
+		cam.go_to(g if g.x != INF else cam._t_target, clampf(_tac_dist, 60.0, BattleStrategic.K_START - 40.0))
+
+## Tilt-shift della vista di gioco: a fuoco il punto osservato, sfocati il fondo e (da camera alta) il primo piano.
+## L'intensità cresce con la distanza della telecamera: da vicino è quasi nulla, dalla vista alta dà l'effetto plastico.
+func _update_tilt() -> void:
+	if photo or cam == null:
+		return
+	var k := _tilt_k * smoothstep(45.0, 320.0, cam.dist)
+	if k <= 0.01:
+		if cam.attributes != null:
+			cam.attributes = null
+		return
+	if _tilt_attr == null:
+		_tilt_attr = CameraAttributesPractical.new()
+	if cam.attributes != _tilt_attr:
+		cam.attributes = _tilt_attr
+	var d := cam.dist
+	_tilt_attr.dof_blur_far_enabled = true
+	_tilt_attr.dof_blur_far_distance = d * 1.18 + 10.0
+	_tilt_attr.dof_blur_far_transition = d * 0.9 + 20.0
+	# primo piano sfocato solo da camera alta (inquadratura inclinata): da vicino resterebbe sfocata l'unità sotto il cursore
+	var nk := smoothstep(110.0, 400.0, d)
+	_tilt_attr.dof_blur_near_enabled = nk > 0.05
+	_tilt_attr.dof_blur_near_distance = d * lerpf(0.5, 0.72, nk)
+	_tilt_attr.dof_blur_near_transition = d * 0.3
+	_tilt_attr.dof_blur_amount = 0.03 + 0.07 * k
 
 ## Profondità di campo (0 = spenta .. 1 = forte), a fuoco sul terreno al centro dello schermo.
 func photo_dof(v: float) -> void:
@@ -2703,6 +2850,14 @@ func _on_button(id: String) -> void:
 			photo_shoot()
 		"photo_exit":
 			set_photo(false)
+
+## Tab va intercettato prima dell'interfaccia (altrimenti sposta il fuoco tra i pulsanti).
+func _input(ev: InputEvent) -> void:
+	if ev is InputEventKey and ev.pressed and not ev.echo and sim != null and not photo:
+		var code: int = ev.physical_keycode if ev.physical_keycode != 0 else ev.keycode
+		if code == KEY_TAB and not ev.ctrl_pressed and not ev.alt_pressed:
+			toggle_strategic()
+			get_viewport().set_input_as_handled()
 
 func _unhandled_input(ev: InputEvent) -> void:
 	if sim == null or sim.done:

@@ -505,3 +505,81 @@ Proprietà: `scripts/battle/battle_weather.gd` (nuovo, `class_name BattleWeather
   (`amb_surf`), 2 sorgenti posizionali di incendio (`amb_fire`) sui relitti/macerie più vicini, tuoni (`amb_thunder`, 3 varianti)
   1–5 s dopo il lampo, vento modulato dal meteo. Tutto in loop sintetizzati nel thread di lavoro (22,05 kHz, giunte pulite).
 - Demo/screenshot: `--weather=kind --wet=1 --snowcover=1 --flare=1 --boom=t1,t2 --boomf=f1,f2 --cam=farm --photo=1`.
+
+---
+# Omogeneità campagna ↔ battaglia (notte 2, agente REGOLE; regole e numeri in `docs/omogeneita.md`)
+## Setup della battaglia (nuove chiavi, tutte facoltative e retrocompatibili)
+- `setup.buildings: Array[String]` edifici del territorio → `sim.landmarks` (siti con copertura pesante nella metà del difensore) e obiettivi.
+- `setup.hq: bool` capitale del difensore → obiettivo «Quartier generale».
+- `setup.att|def.air: bool` supporto aereo (J) disponibile (aeroporto proprio nel territorio o accanto); assente → vecchia regola (caccia/elicotteri o supporto).
+- `setup.att|def.naval: int` batterie navali (si sommano a `support`); `sides[i]["naval"]`.
+- `setup.att|def.reinf = {forces, t, dir (-1 nord / +1 sud)}` rinforzi dai territori vicini: entrano a `t` s dal proprio bordo.
+- `setup.att|def.manual: bool`, `worn: bool` (solo informativi per l'HUD).
+## Sim (BattleSim)
+- `objectives[] = {kind: "hq"|"building"|"bridge"|"ford"|"hill"|"bunker", key, name, x, y, r, owner (-1/0/1), home, hold: [s, s], contested}`,
+  `objectives_held() -> [att, def]`, `landmarks[] = {key, name, x, y, w, h}`, `reinf[si]`, `reinf_eta(si) -> s | -1`,
+  `retreating[si]`, `escaped[si] = {main: forces, reinf: forces}`, `Unit.reinf`, `Unit.escaped`.
+- Limite `BattleRules.BATTLE_T` (300 s) = `MAX_TIME` = `AUTO_MAX_TIME`: allo scadere (e nello stallo) decide `_time_winner()`
+  (più obiettivi tenuti → attaccante, altrimenti difensore; senza obiettivi la vecchia `_stall_winner`).
+- `retreat()` (solo attaccante umano) ordina la ritirata al bordo: non chiude subito; `result.retreated` quando l'attaccante non ha più unità sul campo.
+  L'IA attaccante si ritira da sola (`AI_RETREAT_T/K`). Chi raggiunge `RETREAT_EDGE` è salvo (`_escape`, fx `escape`).
+- `result` ha in più `attReinf`, `defReinf` (superstiti dei rinforzi), `objectives: [att, def]`, `time`, `why`.
+- Nuovi eventi fx: `{"e":"objective", name, side, x, y, kind}`, `{"e":"reinf", side, x, y, n}`, `{"e":"escape", u, x, y, type, side, n}`, `{"e":"retreat", side}`.
+- BattleAI: l'attaccante punta all'obiettivo non tenuto più vicino (`_next_objective`) quando non vede nemici; il settore d'attacco è l'obiettivo.
+## Nucleo (Game) — SAVE_VERSION 3 (v2 migrato)
+- `terr.worn` (turni di logoramento, −15% in `Combat.combat_mods` con `opts.worn`), `terr.decoy`, `terr.silence` (round), `intel` {"p:t": round}.
+- `fog_mode` "none"|"light"|"full" (`opts.fog_mode`; `fog` bool = light o full). `forces_view(viewer, t) -> {exact, forces, est, lo, hi, why}`,
+  `estimate_text(viewer, t)`, `has_intel(viewer, t)`, `worn_of(t)`, `reinf_plan(info)`, `battle_mods(info, manual, fort, reinf_plan)`.
+- OPS nuove (`Data.OPS`): `finta` (target "self"), `silenzio` ("self"), `ricognizione` ("enemy"); `Data.DECEIT_ROUNDS`, `DECOY_UNITS`, `WORN_ROUNDS`, `WORN_MUL`.
+- `_gain_xp(t, pts)`: 2 punti con `info.manual`. Combat ctx: `buildings, hq, air, naval, manual, worn, reinf`.
+
+---
+# Notte 2 — grafica "un solo mondo" (agente GRAFICA, 2026-11-10/11)
+Proprietà: `battle_terrain.gd`, `battle_landscape.gd`, `battle_decor.gd`, `battle_props.gd`, `battle_marks.gd`, `battle_weather.gd`,
+`terrain_ground.gdshader`, `scripts/models/paint.gdshader`, `soldier.gdshader`, `foliage.gdshader`, `scripts/map/scene_fade.gd` (nuovo),
+`world_map.gd` (`dive_to`/`rise_from`); modifiche piccole in `battle3d.gd` (uscita cinematica, gettoni dei velivoli) e `main.gd` (transizione).
+
+## Prestazioni (BattleTerrain)
+- **Suolo a due livelli**: la zona fitta (passo 2 m: campo + 24 passi attorno) ha per ogni blocco una copia a passo 8 m con
+  "gonna" (`_chunk_mesh(..., stride, skirt)`, `chunks_lo`), `visibility_range` a `LOD_D = 760` m dal centro del blocco: dalla vista
+  strategica lo shader del suolo non gira più 3-4 volte per pixel su triangoli di 1-2 px. I crateri (`deform_crater`) toccano solo
+  il livello vicino.
+- **Alberi a due livelli**: `_add_instances` crea per ogni blocco il MultiMesh del modello (fino a `LOD_T = 480` m), uno con
+  `BattleProps.tree_lod_mesh(kind)` (20 triangoli, colori medi del modello, shader `LOD_SHADER` con la stessa luce del fogliame)
+  oltre, e uno "solo ombre" con la sagoma a 20 triangoli (le ombre non costano più 900 triangoli ad albero). I nodi vicini hanno
+  meta `lod_hi` (+ `lod_twin`, `lod_shadow` = MultiMesh gemelli: BattleMarks replica abbattimenti); i lontani `lod_lo`.
+  Distanze di disegno dei gruppi: `terrain.set_tree_range(nodes, end, margin)` (non toccare `visibility_range_end` a mano).
+- **Shader del suolo**: oltre 1 km (`near_px`, `far_k`) niente texture fotografiche fini, normal map, roccia triplanare, rumore a 1,4 m.
+- Interruttori di confronto (solo demo): `--trees=0`, `--lod=hi|lo|<metri>`, `--dbg=overdraw|wireframe|lighting|unshaded`.
+
+## Paesaggio
+- **Maschera dei boschi condivisa** `terrain.forest_at(p)` (stesso rumore di `noise_tex`, `_noise_img`; `BattleLandscape.forest_at`
+  la richiama): gli alberi 3D attorno al campo (`_scatter(..., mask_k)`, fitti vicino e radi lontano, `_outside_d`) e le chiome dipinte
+  nello shader stanno negli stessi posti; `_build_fields` non mette coltivi dove il paesaggio è bosco. `FOREST_AMT`/`MOSAIC` per terreno
+  in BattleLandscape (foresta 0.6/0.55, deserto 0.03 = rare oasi).
+- Shader: mosaico dei campi solo su terreno dolce e con orientamento costante per regione di 1,7 km (prima i confini si piegavano
+  in "curve di livello"); strati di roccia solo da vicino; fuori campo roccia solo sui versanti ripidi (`rs`), più roccia verso la
+  neve; macro-chiazze delle foto non proiettate sui versanti ripidi; neve lontana non copre le chiome.
+- **Laghi lontani** `terrain.far_lakes` ([X, Z, R, quota], `_make_far_lakes` prima della mesh: conca in `_h_raw`), specchio d'acqua
+  `BattleLandscape._build_lakes` ("FarLakes", shader del fiume); `terrain.in_far_lake(p)`. Il fiume prosegue fino a ±0,72·OUTER e il
+  rilievo lontano non lo seppellisce. Deserto: altipiani a cima piatta (`_far_term`), colori beige (`cols["deserto"]`, `c_sand`).
+- **Paesi**: più grandi (cittadine a isolati 20%, 90-160 case), orti/frutteti a filari attorno, periferie della città (`_suburbs`,
+  case basse sulla maglia degli isolati fino a 1,5 km, sempre più rade).
+- **Notte**: `terrain.set_night(k)` (da `BattleWeather.setup`): finestre accese (materiale `NIGHT_SHADER` sui MultiMesh `NIGHT_KINDS`,
+  per istanza alcune spente) e chiazze di luce a terra (`terrain.add_glow(p, r, k, col)` → MultiMesh "NightGlows", additivo):
+  lampioni della città (BattleDecor), piazze e vie dei paesi, case, periferie.
+- **Siti del territorio** `sim.landmarks` (REGOLE): `_build_sites()` disegna fabbrica/aeroporto/porto/raffineria/caserma/fortino con i
+  pezzi dei punti di riferimento (registrati come edifici: occlusione e distruzione), recinzione sul perimetro.
+
+## Mezzi e soldati (paint.gdshader / soldier.gdshader)
+- Mimetica a due scale (macchie larghe), vernice stinta a chiazze, polvere sulle parti basse (`dust_low`, anche da fermo),
+  bordi consumati sugli spigoli (`fwidth` della normale), scheggiature e fango come prima. Soldati: stoffa stinta per soldato,
+  fango/polvere su stivali e ginocchia. Modelli esterni candidati: `docs/modelli_candidati.md` (non scaricati).
+
+## Transizione tabellone ↔ battaglia
+- `main.battle_manual()`: con tabellone 3D e fuori dai test (`_cinematic_ok`), `map.dive_to(terr)` (MapCamera scende sul
+  territorio), `SceneFade` (CanvasLayer nero, `scripts/map/scene_fade.gd`) a nero, poi la battaglia parte con l'introduzione dall'alto
+  e riapre. `_input_blocked()` tiene conto di `_transition`.
+- `Battle3D`: alla fine (`_end_wait` o «Continua») **uscita cinematica** `OUTRO_T = 1.6 s`: la telecamera risale a `max_dist`, poi
+  `finished`. `main._after_battle`: a nero, `map.rise_from(terr)` (vista bassa sul territorio che risale alla vista di prima), riapre.
+- Velivoli: gettone sempre visibile (anche sotto 55 m), mai nascosto dall'occlusione.

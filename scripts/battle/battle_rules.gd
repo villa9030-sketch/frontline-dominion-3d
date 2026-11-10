@@ -45,7 +45,7 @@ const MATRIX_OVERRIDE := {
 
 ## Iniziativa dell'attaccante (sceglie dove e quando colpire): moltiplica il danno inflitto dal lato 0.
 ## Tarata perché a forze pari il difensore vinca ~60–65% (vedi tests/test_tactics.gd).
-const ATT_INITIATIVE := 1.4
+const ATT_INITIATIVE := 1.6
 const LUCK := 0.1                 # deviazione standard delle "condizioni del giorno" per lato (danno inflitto)
 
 # ---- visibilità e copertura
@@ -122,6 +122,24 @@ const FLARE_CD := [22.0, 34.0]     # s tra due razzi illuminanti dello stesso la
 const FLARE_T := 16.0              # durata della luce
 const FLARE_R := 620.0             # px: raggio illuminato (≈155 m): dentro, la vista torna piena
 const RUBBLE_COVER := 2            # macerie di un edificio crollato: copertura pesante per la fanteria
+
+
+# ---- Omogeneità campagna ↔ battaglia (notte 2, docs/omogeneita.md)
+const BATTLE_T := 300.0           # s: limite della battaglia (anche in risoluzione automatica); allo scadere decidono gli obiettivi
+const OBJ_R := 260.0              # px: raggio di controllo di un obiettivo
+const OBJ_HOLD := 60.0            # s di presenza esclusiva per conquistare un obiettivo
+const OBJ_MAX := 4                # obiettivi al massimo per battaglia
+const OBJ_HILL_MIN := 6.0         # m sopra la quota minima perché un'altura sia un obiettivo
+const RETREAT_EDGE := 150.0       # px dal proprio bordo: un reparto che lo raggiunge in ritirata è salvo
+const AI_RETREAT_T := 120.0       # s: da quando l'IA attaccante può ritirarsi...
+const AI_RETREAT_K := 0.35        # ... se la sua potenza è sotto questa frazione di quella del difensore
+const REINF_SHARE := 0.2          # quota delle unità di terra di ogni territorio confinante che arriva come rinforzo
+const REINF_CAP := 0.5            # tetto dei rinforzi: frazione dell'esercito iniziale del lato
+const REINF_T := [165.0, 150.0]   # s di arrivo dei rinforzi [attaccante, difensore]
+const NAVAL_SUPPORT := [3, 2]     # batterie navali: [attaccante dal mare con porto, difensore con porto]
+const REINF_TYPES := ["inf", "tank", "art", "aa"]
+const BUILDING_SITES := {"caserma": "Caserma", "fabbrica": "Fabbrica", "aeroporto": "Aeroporto", "porto": "Porto",
+	"impianto": "Raffineria", "bunker": "Fortino"}
 
 
 ## Piano meteo deterministico dal seed: {"start": kind, "changes": [[t_s, kind], ...]} (al più un cambiamento, tra 70 e 200 s).

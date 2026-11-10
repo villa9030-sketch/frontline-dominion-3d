@@ -52,10 +52,16 @@ static func think(s, si: int) -> void:
 		kx += float(g["x"]) * 0.5; ky += float(g["y"]) * 0.5; kw += 0.5
 	var ex: float
 	var ey: float
+	# obiettivo del campo (docs/omogeneita.md §1): il più vicino non ancora tenuto; l'attaccante vi punta quando non vede nemici
+	var obj = _next_objective(s, si, mx, my)
 	if kw > 0:
 		ex = kx / kw; ey = ky / kw
+	elif obj != null:
+		ex = float(obj["x"]) - dirx * 120.0; ey = float(obj["y"])
 	else:
 		ex = s.deploy_zone(E).get_center().x; ey = my
+	if obj != null and si == 0:
+		A["fy"] = clampf(float(obj["y"]), s.TOP + 150.0, s.BOTTOM - 150.0)   # settore d'attacco = obiettivo
 	if int(S["support"]) > 0 and S["barrage_cd"] <= 0:
 		var p = s._cluster(si)
 		if p != null:
@@ -92,6 +98,21 @@ static func think(s, si: int) -> void:
 		_defend(s, si, mine, kground, kaa, dirx, reorder, A, mx, my)
 	else:
 		_attack(s, si, mine, kground, kaa, ex, ey, mx, my, dirx, reorder, ph == "scout", A)
+
+
+## Obiettivo più vicino (dal baricentro del lato) non tenuto dal lato; null se non ci sono obiettivi.
+static func _next_objective(s, si: int, mx: float, my: float):
+	var best = null
+	var bd := 1e18
+	for o in s.objectives:
+		if int(o["owner"]) == si:
+			continue
+		var d: float = (float(o["x"]) - mx) * (float(o["x"]) - mx) + (float(o["y"]) - my) * (float(o["y"]) - my) * 0.5
+		if o["kind"] == "hq":
+			d *= 0.6   # il QG vale di più
+		if d < bd:
+			bd = d; best = o
+	return best
 
 
 # ---------------------------------------------------------------------------- difesa

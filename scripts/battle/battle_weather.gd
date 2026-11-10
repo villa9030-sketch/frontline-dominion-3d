@@ -78,6 +78,8 @@ func setup(b, e: Environment, s: DirectionalLight3D, sk: ProceduralSkyMaterial, 
 	base = base_vals
 	_rng.seed = int(sim.seed_) * 3 + 11
 	night = String(sim.weather) == "notte"
+	if b.terrain != null and b.terrain.has_method("set_night"):
+		b.terrain.set_night(1.0 if night else 0.0)   # finestre accese, chiazze di luce di lampioni e paesi
 	if sim.tkey == "artico":
 		snow_cover = 1.0
 	set_kind(String(sim.weather), true)

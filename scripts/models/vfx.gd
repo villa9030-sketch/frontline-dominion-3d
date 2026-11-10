@@ -82,16 +82,16 @@ static func _mat(key: String) -> StandardMaterial3D:
 		"fire":
 			m.albedo_texture = _smoke_tex()
 			m.proximity_fade_enabled = true
-			m.proximity_fade_distance = 1.5
+			m.proximity_fade_distance = 2.5
 		"smoke":
 			m.albedo_texture = _smoke_tex()
 			m.proximity_fade_enabled = true
-			m.proximity_fade_distance = 2.0
+			m.proximity_fade_distance = 4.0
 			m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 		"dust":
 			m.albedo_texture = _smoke_tex()
 			m.proximity_fade_enabled = true
-			m.proximity_fade_distance = 1.5
+			m.proximity_fade_distance = 3.0
 		"debris":
 			m.billboard_mode = BaseMaterial3D.BILLBOARD_DISABLED
 			m.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
@@ -99,6 +99,9 @@ static func _mat(key: String) -> StandardMaterial3D:
 		"glowp":
 			m.albedo_texture = _tex()
 			m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+			# lampi grandi: sfumano contro alberi e tetti invece di tagliarli con un bordo netto
+			m.proximity_fade_enabled = true
+			m.proximity_fade_distance = 3.0
 		"glow":
 			m.billboard_mode = BaseMaterial3D.BILLBOARD_DISABLED
 			m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD

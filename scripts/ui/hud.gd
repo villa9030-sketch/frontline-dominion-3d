@@ -1492,6 +1492,14 @@ func _refresh_right() -> void:
 			r4.add_child(_chip("sabotage", "Sabotato " + _dur(int(ceil(float(st["sabotage"]))), float(st["sabotage"])), UIKit.RED))
 		if main.turn_mode() and int(st.get("regroup", 0)) > 0 and o == hh:
 			r4.add_child(_chip("clock", "Riorganizzazione %s" % _dur(int(st["regroup"]), 0), UIKit.ORANGE))
+		if vis and int(st.get("worn", 0)) > 0:
+			var wc := _chip("alert", "Truppe logorate −%d%% · recupero tra %d turn%s" % [roundi((1.0 - float(Data.WORN_MUL)) * 100), int(st["worn"]), "o" if int(st["worn"]) == 1 else "i"], UIKit.ORANGE)
+			wc.tooltip_text = "Logoramento: dopo una battaglia le truppe combattono al −15%% finché non passano un turno senza combattere, rifornite."
+			r4.add_child(wc)
+		if o == hh and int(st.get("decoy", 0)) > 0:
+			r4.add_child(_chip("card", "Divisione falsa (%d round)" % int(st["decoy"]), Color("#bff0d0")))
+		if o == hh and int(st.get("silence", 0)) > 0:
+			r4.add_child(_chip("card", "Silenzio radio (%d round)" % int(st["silence"]), Color("#bff0d0")))
 		if not vis:
 			r4.add_child(_chip("fog", "Nella nebbia", Color("#b8c6d0")))
 		if pact != null:
@@ -1503,14 +1511,15 @@ func _refresh_right() -> void:
 	# forze
 	var f = st["forces"] if hh < 0 else main.gcall("visible_forces", [hh, t], st["forces"])
 	var fog_t: String = "" if vis else main.fog_text(t)
-	_sec(rp["forces"], str(t) + str(f) + fog_t + str(vet), func(c: Control):
+	var est_only: bool = vis and f == null and o != hh and main.estimate(t) >= 0   # divisione falsa / stima leggera
+	_sec(rp["forces"], str(t) + str(f) + fog_t + str(vet) + str(est_only) + str(main.estimate(t)), func(c: Control):
 		var note := ""
 		if f != null and vis:
 			note = "%d unità" % Data.total_units(f)
 			if vet > 0:
 				note += " · veterani +%d%%" % (6 * vet)
 		c.add_child(UIKit.header("Forze", note))
-		if not vis:
+		if not vis or est_only:
 			c.add_child(_fog_box(t))
 			return
 		if f == null:
@@ -1905,13 +1914,13 @@ func _fog_box(t: int) -> Control:
 	var p := PanelContainer.new()
 	p.add_theme_stylebox_override("panel", UIKit.box(Color(0.55, 0.65, 0.72, 0.08), Color(0.6, 0.7, 0.78, 0.3), 1, 3, Vector4(10, 7, 10, 7)))
 	p.mouse_filter = Control.MOUSE_FILTER_PASS
-	p.tooltip_text = "Territorio fuori dalla tua vista: lo vedi solo se confina con un tuo territorio."
+	p.tooltip_text = "Territorio fuori dalla tua vista: lo vedi solo se confina con un tuo territorio.\nLa carta Ricognizione mostra le forze esatte; una divisione falsa o il silenzio radio nemici possono ingannarti."
 	var h := UIKit.hbox(10)
 	h.add_child(UIKit.icon("fog", 30))
 	var v := UIKit.vbox(0)
 	if e >= 0:
 		var r := UIKit.hbox(6)
-		r.add_child(UIKit.label("≈%d" % e, 26, UIKit.WHITE, "mono", 700))
+		r.add_child(UIKit.label(main.estimate_text(t), 22, UIKit.WHITE, "mono", 700))
 		var u := UIKit.label("forze stimate", 13, UIKit.TEXT)
 		u.size_flags_vertical = Control.SIZE_SHRINK_END
 		r.add_child(u)
@@ -2290,11 +2299,15 @@ func update_tip(force: bool = false) -> void:
 	s += "[color=%s]■[/color] %s\n" % [oc, (O["fac"]["short"] + (" (tu)" if o == hh else "")) if O != null else "Neutrale"]
 	if not vis:
 		var e: int = main.estimate(t)
-		s += "[color=#b8c6d0]Nella nebbia: %s[/color]" % (("forze stimate [b]≈%d[/b]" % e) if e >= 0 else "forze [b]sconosciute[/b]")
+		s += "[color=#b8c6d0]Nella nebbia: %s[/color]" % (("forze stimate [b]%s[/b]" % main.estimate_text(t)) if e >= 0 else "forze [b]sconosciute[/b]")
+	elif f == null and o != hh and main.estimate(t) >= 0:
+		s += "Forze: [b]%s[/b] [color=#8b9a8d](stima)[/color]" % main.estimate_text(t)
 	else:
 		s += "Forze: [b]%s[/b] [color=#8b9a8d]%s[/color]" % [str(Data.total_units(f)) if f != null else "?", UIKit.forces_text(f) if f != null else "nascoste"]
 		if vet > 0:
 			s += "\n[color=#ffd84a]Veterani %s[/color] [color=#8b9a8d](+%d%%)[/color]" % [main.stars(vet), 6 * vet]
+	if vis and main.worn_of(t) > 0:
+		s += "\n[color=#ffb070]Truppe logorate −15%% (recupero tra %d turni)[/color]" % main.worn_of(t)
 	if o >= 0 and hh >= 0 and o != hh and main.pact_between(hh, o) != null:
 		s += "\n[color=#bff0d0]Patto di non aggressione %s[/color]" % main.until_text(float(main.pact_between(hh, o)["until"]))
 	var mode = main.mode

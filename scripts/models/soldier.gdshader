@@ -67,7 +67,13 @@ void fragment() {
 		float blot = texture(grime_tex, (o_pos.xz + o_pos.yy * 0.7) * 0.11).r;
 		float up = clamp(n.y, 0.0, 1.0);
 		alb = mix(alb, srgb_to_lin(dust_col), wear * (up * up * smoothstep(0.35, 0.8, blot) * 0.38 + smoothstep(0.62, 0.9, blot) * 0.1));
-		rough = clamp(base_rough + (blot - 0.5) * 0.18, 0.25, 1.0);
+		// stoffa stinta a chiazze e fango/polvere su stivali e ginocchia (parte bassa del soldato, a riposo)
+		float fade = texture(grime_tex, (o_pos.xz * 0.6 + o_pos.y * vec2(0.17, 0.11)) * 0.9).r;
+		alb *= 1.0 + wear * (fade - 0.5) * 0.14 * (1.0 - COLOR.a * float(skin));
+		float low = clamp(1.0 - o_pos.y / 0.75, 0.0, 1.0);
+		float dl = wear * smoothstep(0.15, 0.95, low + (blot - 0.5) * 0.3) * 0.5 * (1.0 - COLOR.a * float(skin));
+		alb = mix(alb, srgb_to_lin(dust_col) * 0.7, dl);
+		rough = clamp(base_rough + (blot - 0.5) * 0.18 + dl * 0.15, 0.25, 1.0);
 	}
 	ALBEDO = alb;
 	ROUGHNESS = rough;

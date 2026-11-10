@@ -185,7 +185,7 @@ La [b]ricerca[/b] (pulsante in alto) vale per [b]tutti[/b] i tuoi territori; gli
 		"target":
 			return "I bersagli possibili sono [color=#ff8a6a]evidenziati in rosso[/color]. Durante la [b]tregua[/b] dei primi turni si attaccano solo i neutrali. [b]Clicca %s[/b]." % Data.TERRITORIES[maxi(0, _tgt)]["name"]
 		"panel":
-			return "Con i [b]cursori[/b] scegli quante unità inviare (una resta a casa) e guarda la [b]previsione[/b]. [b]Comando diretto (3D)[/b] = combatti tu in tempo reale; [b]risoluzione automatica[/b] = esito immediato. Per ora premi [b]risoluzione automatica[/b]."
+			return "Con i [b]cursori[/b] scegli quante unità inviare (una resta a casa) e guarda la [b]previsione[/b]. [b]Comando diretto (3D)[/b] = combatti tu in tempo reale: hai [b]+10%[/b] di attacco ed esperienza doppia, la battaglia dura al massimo [b]5 minuti[/b] e allo scadere decidono gli [b]obiettivi[/b] del campo. [b]Risoluzione automatica[/b] = esito immediato. Dopo ogni battaglia le truppe restano [b]logorate[/b] (−15%) per un turno. Per ora premi [b]risoluzione automatica[/b]."
 		"result":
 			return "L'esito è nel riquadro ORDINI. Se conquisti, le truppe entrano e ottieni una [b]carta[/b] (scheda Carte a sinistra).\nOra premi [b]Fase successiva: Spostamento[/b]."
 		"move":
@@ -195,7 +195,8 @@ La [b]ricerca[/b] (pulsante in alto) vale per [b]tutti[/b] i tuoi territori; gli
 		"ai":
 			return "Ora muovono le IA: attacchi e spostamenti appaiono come [b]frecce[/b] sul tabellone. [b]Spazio[/b] accelera.\nSe qualcuno ti attacca sceglierai: [b]difesa in 3D[/b] o [b]risoluzione automatica[/b]."
 		"defense":
-			return "Un nemico attacca un tuo territorio. [b]Difendi in prima persona (3D)[/b]: schieri tu le truppe e comandi la battaglia. [b]Risoluzione automatica[/b]: esito immediato.\nLe [b]fortificazioni[/b] costruite nel rifornimento aiutano qui."
+			return "Un nemico attacca un tuo territorio. [b]Difendi in prima persona (3D)[/b]: schieri tu le truppe e comandi la battaglia (+10% e esperienza doppia). [b]Risoluzione automatica[/b]: esito immediato.
+Le [b]fortificazioni[/b] costruite nel rifornimento aiutano qui; in difesa basta [b]tenere gli obiettivi[/b] fino allo scadere dei 5 minuti, e i territori vicini mandano [b]rinforzi[/b] a metà battaglia."
 		"done":
 			return "Ottimo, comandante! Ora conosci il turno completo.\nLe icone a [b]sinistra[/b] aprono obiettivo, potenze, carte, mercato, continenti e registro. [b]F1[/b] apre la guida completa. Buona campagna!"
 	return ""

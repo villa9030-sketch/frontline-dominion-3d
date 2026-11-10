@@ -101,8 +101,8 @@ func _photo_process(delta: float) -> void:
 ## Limiti e zoom massimo dal campo (metri, semiassi): a zoom massimo si vede tutto il campo di battaglia.
 func configure_field(hx: float, hz: float) -> void:
 	limit = Vector2(hx + 35.0, hz + 37.5)
-	max_dist = maxf(NEAR_MAX, hx * 1.9)
-	far = maxf(4000.0, max_dist * 4.0)
+	max_dist = maxf(NEAR_MAX, hx * 2.6)   # vista strategica più alta: si vede la regione attorno al campo
+	far = 20000.0
 
 func place(tgt: Vector3, d: float, yw: float) -> void:
 	_t_target = tgt; target = tgt
@@ -118,9 +118,10 @@ func go_to(p: Vector3, d := -1.0) -> void:
 
 func pitch_for(d: float) -> float:
 	if d > NEAR_MAX and max_dist > NEAR_MAX:
-		return deg_to_rad(lerpf(60.0, 70.0, clampf((d - NEAR_MAX) / (max_dist - NEAR_MAX), 0.0, 1.0)))
+		# da molto in alto la camera si inclina di più: si vede la regione fino alle montagne all'orizzonte
+		return deg_to_rad(lerpf(52.0, 38.0, smoothstep(0.0, 1.0, clampf((d - NEAR_MAX) / (max_dist - NEAR_MAX), 0.0, 1.0))))
 	var f := inverse_lerp(min_dist, NEAR_MAX, d)
-	return deg_to_rad(lerpf(32.0, 60.0, pow(clampf(f, 0.0, 1.0), 0.65)))
+	return deg_to_rad(lerpf(32.0, 52.0, pow(clampf(f, 0.0, 1.0), 0.65)))
 
 ## 0 = vicino, 1 = vista d'insieme a zoom massimo.
 func overview_k() -> float:

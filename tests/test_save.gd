@@ -583,7 +583,19 @@ func test_bad_saves() -> void:
 	ok(GameS.from_json("{rotto") == null and GameS.last_load_error != "", "JSON rotto")
 	var g = ai_game(2, "conquista", "regionale", 5)
 	var d: Dictionary = g.serialize()
-	ok(int(d["version"]) == 2 and d.has("turn"), "SAVE_VERSION 2 con stato dei turni")
+	ok(int(d["version"]) == int(GameS.SAVE_VERSION) and int(d["version"]) >= 3 and d.has("turn"), "SAVE_VERSION %d con stato dei turni" % int(d["version"]))
+	# migrazione: un salvataggio v2 (senza worn/decoy/silence/fog_mode) si carica, con nebbia totale dal vecchio bool
+	var d2: Dictionary = JSON.parse_string(JSON.stringify(d))
+	d2["version"] = 2
+	d2["opts"].erase("fog_mode")
+	d2["opts"]["fog"] = true
+	d2.erase("intel")
+	for tr in d2["terr"]:
+		tr.erase("worn"); tr.erase("decoy"); tr.erase("silence")
+	var gm = GameS.deserialize(d2)
+	ok(gm != null and gm.fog_mode == "full" and gm.fog and int(gm.terr[0].get("worn", -1)) == 0 and gm.intel.is_empty(), "salvataggio v2 migrato (nebbia totale, logoramento 0)")
+	if gm != null:
+		gm.dispose()
 	var old: Dictionary = g.serialize()
 	old["version"] = 1
 	old.erase("turn")

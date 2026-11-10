@@ -28,7 +28,17 @@ const CARD_TYPES = {"inf":"Fanteria","tank":"Corazzati","air":"Aviazione","jolly
 const SET_VALUES = [4,6,8,10,12,15]
 const CARD_COOLDOWN = 25
 const HAND_MAX = 5
-const OPS = {"rinforzi":{"name":"Rinforzi","target":"own","desc":"Truppe in base al tris, da schierare"},"missile":{"name":"Attacco missilistico","target":"enemy","desc":"Distrugge il 35% delle forze nemiche in un territorio (50% al Liv. 4)"},"sabotaggio":{"name":"Sabotaggio","target":"enemy","desc":"Blocca produzione, reclutamento e fortificazioni per 60 s"},"golpe":{"name":"Golpe","target":"enemy","desc":"Un territorio nemico debole (≤ 8 unità, non QG) passa a te"}}
+## target: "own" = nessun bersaglio (vale per te), "enemy" = territorio nemico, "self" = un tuo territorio
+const OPS = {"rinforzi":{"name":"Rinforzi","target":"own","desc":"Truppe in base al tris, da schierare"},"missile":{"name":"Attacco missilistico","target":"enemy","desc":"Distrugge il 35% delle forze nemiche in un territorio (50% al Liv. 4)"},"sabotaggio":{"name":"Sabotaggio","target":"enemy","desc":"Blocca produzione, reclutamento e fortificazioni per 2 turni"},"golpe":{"name":"Golpe","target":"enemy","desc":"Un territorio nemico debole (≤ 8 unità, non QG) passa a te"},
+	"finta":{"name":"Divisione falsa","target":"self","desc":"Per 2 round i nemici vedono questo tuo territorio solo come stima, gonfiata di 8 unità"},
+	"ricognizione":{"name":"Ricognizione","target":"enemy","desc":"Per 2 round vedi forze, edifici e fortificazioni esatte di un territorio nemico e dei suoi vicini"},
+	"silenzio":{"name":"Silenzio radio","target":"self","desc":"Per 2 round i nemici non sanno nulla delle forze in questo tuo territorio"}}
+## Carte inganno e nebbia leggera (docs/omogeneita.md §5)
+const DECEIT_ROUNDS = 2
+const DECOY_UNITS = 8
+const FOG_MODES = {"none": "Nessuna", "light": "Leggera", "full": "Totale"}
+const WORN_ROUNDS = 2        # turni di logoramento dopo una battaglia
+const WORN_MUL = 0.85        # −15% attacco per le truppe logorate
 const GOLPE_MAX = 8
 const SABOTAGE_TIME = 60
 const ECON = {"baseMoney":0.7,"baseManpower":0.35,"baseSteel":0.15,"baseOil":0.1,"specRate":0.8,"passive":0.6,"hqMul":1.6666666666666667,"impiantoMul":1.6,"unsupplied":0.5,"startRes":{"money":600,"oil":200,"steel":250,"manpower":150},"militiaEvery":12,"militiaCap":6,"garrisonEvery":30,"garrisonCap":3,"truce":240,"regroup":20,"occupation":90,"reinforceEvery":40,"reinforceMin":4,"travelSpeed":22,"seaSlow":0.4,"airliftSpeed":4,"seaLandingPenalty":0.75,"bunkerDef":1.3,"hqDef":1.5,"unsuppliedCombat":0.8,"lowOilCombat":0.7,"hqCaptureSteal":0.3,"victoryShare":0.7}

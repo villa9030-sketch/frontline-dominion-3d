@@ -43,9 +43,10 @@ func _build() -> void:
 
 	c1.add_child(UIKit.header("Grafica"))
 	var q := []
-	for k in ["basso", "medio", "alto"]:
-		q.append([k, {"basso": "Bassa", "medio": "Media", "alto": "Alta"}[k]])
-	c1.add_child(_row("Qualità grafica", _seg("quality", q), "Bassa: senza antialias multiplo, risoluzione 3D al 75%, ombre e vegetazione ridotte. Alta: MSAA 4×, ombre e dettagli massimi."))
+	for k in ["basso", "medio", "alto", "ultra"]:
+		q.append([k, {"basso": "Bassa", "medio": "Media", "alto": "Alta", "ultra": "Ultra"}[k]])
+	c1.add_child(_row("Qualità grafica", _seg("quality", q), "Bassa: senza antialias multiplo, risoluzione 3D al 75%, ombre e vegetazione ridotte. Alta: MSAA 4×, ombre e dettagli massimi. Ultra: come Alta più luce indiretta (SSIL e SDFGI) in battaglia: solo per schede video potenti."))
+	c1.add_child(_row("Scalatura 3D", _seg("upscale", [["nativo", "Nativa"], ["taa", "TAA"], ["fsr2", "FSR 2.2"]]), "Nativa: antialias della qualità scelta. TAA: antialias temporale (bordi più morbidi, niente scalettature sull'erba). FSR 2.2: la scena 3D è disegnata al 67% e ricostruita a piena risoluzione: più fps con poca perdita di nitidezza."))
 	c1.add_child(_row("Schermo intero", _toggle("fullscreen"), "Spento: finestra massimizzata. Alt+Invio per alternare in qualsiasi momento"))
 	c1.add_child(_row("Ciclo giorno/notte", _toggle("daynight"), "Il tabellone alterna giorno e notte col passare del tempo di gioco. Spento: luce diurna fissa"))
 	c1.add_child(UIKit.spacer(0, 4, false))

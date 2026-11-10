@@ -261,7 +261,16 @@ func _process(_delta: float) -> bool:
 	b.recall_group(1)
 	_check(b.sel.size() > 0, "gruppo 1 vuoto")
 	_check(b.retreat(), "ritirata rifiutata")
-	_check(b.done and b.result["retreated"], "ritirata senza risultato")
+	_check(not b.retreat(), "ritirata già in corso rifiutata")
+	# ritirata ordinata (omogeneità §1): i reparti ripiegano al bordo e si salvano; la battaglia finisce senza l'attaccante sul campo
+	var guard := 0
+	while not b.done and guard < 4000:
+		b.step(0.1)
+		guard += 1
+	_check(b.done and b.result["retreated"] and b.result["winner"] == "def", "ritirata: fine con retreated e vittoria del difensore")
+	var saved: int = D.total_units(b.escaped[0]["main"])
+	_check(saved > 0 and D.total_units(b.result["att"]) >= saved, "ritirata: %d unità salve al bordo (superstiti %d)" % [saved, D.total_units(b.result["att"])])
+	print("  ritirata ordinata: salve %d, superstiti %d, durata %.0f s" % [saved, D.total_units(b.result["att"]), b.time])
 	b.dispose()
 	# schieramento iniziale: le unità finiscono nella zona del proprio lato, senza sovrapporsi
 	var bd = BS.new(_setup("foresta", {"inf": 18, "tank": 7, "art": 3}, {"inf": 8}, 0, 5, {"ah": true}))

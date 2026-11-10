@@ -19,8 +19,8 @@ const STALL_ATT := 1.1      # stallo/tempo: vince l'attaccante se la sua potenza
 const STALL_COVER := 1.5    # ... in cui le unità del difensore in copertura contano ×1.5
 const NO_DMG_AI := 90.0
 const NO_DMG_HUMAN := 180.0
-const MAX_TIME := 900.0
-const AUTO_MAX_TIME := 450.0   # tetto della risoluzione automatica (s di battaglia)
+const MAX_TIME := 300.0        # = BattleRules.BATTLE_T: allo scadere decidono gli obiettivi (docs/omogeneita.md)
+const AUTO_MAX_TIME := 300.0   # tetto della risoluzione automatica (s di battaglia)
 const AUTO_DT := 1.0           # passo della risoluzione automatica
 const SEP_GROUND := 1.0
 
@@ -115,6 +115,8 @@ class Unit extends RefCounted:
 	var rx := 0.0                   # IA: punto assegnato
 	var ry := 0.0
 	var rt := 0.0                   # IA: istante dell'assegnazione
+	var reinf := false              # rinforzo arrivato da un territorio vicino (torna a casa a fine battaglia)
+	var escaped := false            # in ritirata ha raggiunto il proprio bordo: salvo (conta tra i superstiti)
 
 class Shell extends RefCounted:
 	var on := false
@@ -195,6 +197,14 @@ var weather_sched: Array = []     # [[t_s, kind], ...] cambiamenti futuri (ordin
 var flares: Array = []            # razzi illuminanti in volo {x, y, r, until, side}: dentro, la vista torna piena
 var _flare_cd := [0.0, 0.0]
 var rubble: Array = []            # macerie {x, y, r} (copertura pesante aggiunta dalla vista alla caduta di un edificio)
+## Omogeneità (docs/omogeneita.md): obiettivi del campo, luoghi (edifici del territorio), rinforzi, ritirata ordinata.
+## objectives[i] = {kind: "hq"|"building"|"bridge"|"ford"|"hill"|"bunker", key, name, x, y, r, owner: -1|0|1, home, hold: [s, s]}
+var objectives: Array = []
+var landmarks: Array = []         # {key, name, x, y, w, h}: edifici del territorio sul campo (copertura pesante; la vista può disegnarli)
+var reinf: Array = [null, null]   # per lato: {forces, t, dir (-1 nord / +1 sud), arrived: bool}
+var retreating := [false, false]  # il lato sta ripiegando verso il proprio bordo
+var escaped: Array = [{"main": {}, "reinf": {}}, {"main": {}, "reinf": {}}]   # unità salve (ritirata al bordo)
+var _obj_t := 0.0
 ## Modalità veloce (risoluzione automatica): passo interno fino a AUTO_DT, meno calcoli di percorso.
 var fast := false
 ## Profilazione (solo test): microsecondi per sezione.
@@ -256,10 +266,18 @@ func _init(s: Dictionary) -> void:
 	var nb := maxi(maxi(0, int(def.get("bunkers", 0))), [0, 2, 3, 5][fort["bunker"]])
 	bunker_pos = _bunker_spots(nb)
 	_gen_map()
+	_gen_landmarks()
 	_build_grids()
 	_spawn()
 	init = [_count_mobile(0), _count_mobile(1)]
 	cnt = init.duplicate()
+	for si in 2:
+		escaped[si] = {"main": Data.empty_forces(), "reinf": Data.empty_forces()}
+		var rs = (att if si == 0 else def).get("reinf")
+		if rs is Dictionary and Data.total_units(Data.clone_forces(rs.get("forces", {}))) > 0:
+			reinf[si] = {"forces": Data.clone_forces(rs["forces"]), "t": float(rs.get("t", BattleRules.REINF_T[si])),
+				"dir": -1 if int(rs.get("dir", -1)) < 0 else 1, "arrived": false}
+	_gen_objectives()
 	# Fase 8: meteo dal setup (vedi `weather`)
 	var wk := String(s.get("weather", ""))
 	if wk == "auto":
@@ -384,13 +402,21 @@ func _mk_side(i: int, s: Dictionary, support: int) -> Dictionary:
 	var color := _to_color(s.get("color", null), Color("#ef4444") if i else Color("#3b82f6"))
 	var human := bool(s.get("human", false))
 	var fo: Dictionary = s.get("forces", {})
-	var air := int(fo.get("jet", 0)) > 0 or int(fo.get("heli", 0)) > 0 or support > 0
+	# supporto aereo (J): dalla campagna solo con un aeroporto proprio nel territorio o accanto (setup.X.air);
+	# senza l'indicazione (test, demo) vale la vecchia regola: caccia/elicotteri nell'esercito o supporto d'artiglieria
+	var air: bool
+	if s.has("air"):
+		air = bool(s["air"])
+	else:
+		air = int(fo.get("jet", 0)) > 0 or int(fo.get("heli", 0)) > 0 or support > 0
+	var naval := maxi(0, int(s.get("naval", 0)))   # batterie navali (porto/flotta): si sommano al supporto d'artiglieria
 	return {
 		"smoke_cd": 0.0, "air_uses": 1 if air else 0, "air_t": -1.0, "hurt": 0.0,
 		"i": i, "name": String(s.get("name", "Difensore" if i else "Attaccante")), "color": color, "human": human,
 		"forces": Data.clone_forces(s.get("forces", {})),
 		"mods": {"atk": atk_mul, "unit": mods.get("unit", {}), "hp": mods.get("hp", {})},
-		"support": maxi(0, support), "barrage_cd": 0.0 if human else (9.0 if i else 6.0),
+		"support": maxi(0, support) + naval, "naval": naval, "manual": bool(s.get("manual", false)),
+		"barrage_cd": 0.0 if human else (9.0 if i else 6.0),
 		"ai": {"phase": "start", "t": 0.5 if i else 0.0, "t0": 0.0, "re": 0.0}, "g": 1,
 	}
 
@@ -559,6 +585,273 @@ func _gen_map() -> void:
 				placed_r += 1
 			obs.append(ob)
 
+# ---------------------------------------------------------------------------- omogeneità: luoghi e obiettivi
+## Edifici del territorio (setup.buildings) come luoghi nella metà del difensore: copertura pesante per la fanteria,
+## obiettivi di battaglia. Non bloccano il movimento (sono "siti": cortili, capannoni, piazzali).
+func _gen_landmarks() -> void:
+	landmarks.clear()
+	var bl = setup.get("buildings", [])
+	if not (bl is Array) or bool(setup.get("clear", false)):
+		return
+	var keys: Array = []
+	for k in bl:
+		if BattleRules.BUILDING_SITES.has(String(k)) and not keys.has(String(k)):
+			keys.append(String(k))
+	if keys.is_empty():
+		return
+	# ordine di importanza: QG a parte; fabbrica/aeroporto/porto/raffineria prima della caserma
+	var prio := ["fabbrica", "aeroporto", "porto", "impianto", "caserma", "bunker"]
+	keys.sort_custom(func(a, b): return prio.find(a) < prio.find(b))
+	var cy := (TOP + BOTTOM) / 2.0
+	var spots := [Vector2(W - 1250.0, cy - 520.0), Vector2(W - 1250.0, cy + 520.0), Vector2(W - 800.0, cy), Vector2(W - 1500.0, cy)]
+	var n := 0
+	for k in keys:
+		if n >= spots.size():
+			break
+		var w := 200.0
+		var h := 150.0
+		var p: Vector2 = spots[n]
+		n += 1
+		if sea and p.x < coast(p.y) + 400.0:
+			p.x = coast(p.y) + 400.0
+		# evita ostacoli bloccanti: sposta verso il bordo del campo se serve
+		var tries := 0
+		while tries < 12 and _obs_blocked_rect(p.x - w / 2, p.y - h / 2, w, h):
+			p.y += 120.0 if (tries % 2 == 0) else -240.0 * ((tries + 1) / 2)
+			p.y = clampf(p.y, TOP + 200.0, BOTTOM - 200.0)
+			tries += 1
+		landmarks.append({"key": k, "name": String(BattleRules.BUILDING_SITES[k]), "x": p.x - w / 2, "y": p.y - h / 2, "w": w, "h": h})
+
+func _obs_blocked_rect(x: float, y: float, w: float, h: float) -> bool:
+	for o in obs:
+		if o["kind"] == "bosco":
+			continue
+		if o["rect"]:
+			if x < o["x"] + o["w"] and x + w > o["x"] and y < o["y"] + o["h"] and y + h > o["y"]:
+				return true
+		else:
+			var cx := clampf(o["x"], x, x + w)
+			var cy := clampf(o["y"], y, y + h)
+			if (cx - o["x"]) * (cx - o["x"]) + (cy - o["y"]) * (cy - o["y"]) < o["r"] * o["r"]:
+				return true
+	return false
+
+## Obiettivi dal contesto (docs/omogeneita.md §1): QG, edifici, ponti/guadi, altura, linea dei bunker. Al massimo OBJ_MAX.
+func _gen_objectives() -> void:
+	objectives.clear()
+	if bool(setup.get("clear", false)) and not bool(setup.get("hq", false)) and landmarks.is_empty():
+		return
+	var cy := (TOP + BOTTOM) / 2.0
+	if bool(setup.get("hq", false)):
+		var hx := W - 620.0
+		if sea:
+			hx = maxf(hx, coast(cy) + 500.0)
+		_add_obj("hq", "hq", "Quartier generale", hx, cy, 1)
+	var nb := 0
+	for lm in landmarks:
+		if nb >= 2 or objectives.size() >= BattleRules.OBJ_MAX:
+			break
+		_add_obj("building", String(lm["key"]), String(lm["name"]), float(lm["x"]) + float(lm["w"]) / 2.0, float(lm["y"]) + float(lm["h"]) / 2.0, 1)
+		nb += 1
+	if relief != null:
+		var xs: Array = []
+		for rv in relief.rivers:
+			for xg in rv.get("xings", []):
+				xs.append(xg)
+		# i più vicini al centro del campo
+		xs.sort_custom(func(a, b): return absf(float(a["y"]) - cy) < absf(float(b["y"]) - cy))
+		var nx := 0
+		for xg in xs:
+			if nx >= 2 or objectives.size() >= BattleRules.OBJ_MAX:
+				break
+			var kind := "bridge" if String(xg["k"]) == "bridge" else "ford"
+			var x := float(xg["x"])
+			_add_obj(kind, kind, "Ponte" if kind == "bridge" else "Guado", x, float(xg["y"]), _home_of(x))
+			nx += 1
+		if relief.has_relief() and objectives.size() < BattleRules.OBJ_MAX:
+			var best := Vector3(-1e9, 0, 0)
+			for j in range(2, 14):
+				for i in range(3, 29):
+					var x: float = W * i / 32.0
+					var y: float = TOP + (BOTTOM - TOP) * j / 16.0
+					if sea and x < coast(y) + 200.0:
+						continue
+					var h := relief.height(x, y)
+					if h > best.x:
+						var far := true
+						for o in objectives:
+							if Vector2(o["x"], o["y"]).distance_to(Vector2(x, y)) < W * 0.18:
+								far = false
+						if far:
+							best = Vector3(h, x, y)
+			if best.x > -1e8 and best.x >= relief.hmin + BattleRules.OBJ_HILL_MIN:
+				_add_obj("hill", "hill", "Quota %d" % int(round(best.x + 100.0)), best.y, best.z, _home_of(best.y))
+	if not bunker_pos.is_empty() and objectives.size() < BattleRules.OBJ_MAX:
+		var bx := 0.0
+		var by := 0.0
+		for b in bunker_pos:
+			bx += b.x; by += b.y
+		_add_obj("bunker", "bunker", "Linea dei bunker", bx / bunker_pos.size(), by / bunker_pos.size(), 1)
+
+## Chi "possiede" all'inizio un punto: nella metà del difensore il difensore, altrimenti neutro.
+func _home_of(x: float) -> int:
+	return 1 if x > W * 0.62 else -1
+
+func _add_obj(kind: String, key: String, name: String, x: float, y: float, home: int) -> void:
+	objectives.append({"kind": kind, "key": key, "name": name, "x": x, "y": y, "r": BattleRules.OBJ_R, "owner": home, "home": home,
+		"hold": [0.0, 0.0], "contested": false})
+
+## Controllo degli obiettivi: presenza esclusiva di unità di terra nel raggio per OBJ_HOLD s continuativi.
+func _upd_objectives(dt: float) -> void:
+	for o in objectives:
+		var ox: float = o["x"]
+		var oy: float = o["y"]
+		var r: float = o["r"]
+		var near := [0, 0]
+		for si in 2:
+			for u in _elist[si]:
+				if u.air:
+					continue
+				var dx: float = u.x - ox
+				var dy: float = u.y - oy
+				if dx * dx + dy * dy < r * r:
+					near[si] += 1
+					break
+		var hold: Array = o["hold"]
+		o["contested"] = near[0] > 0 and near[1] > 0
+		if o["contested"]:
+			hold[0] = 0.0; hold[1] = 0.0
+			continue
+		for si in 2:
+			if near[si] > 0:
+				hold[1 - si] = 0.0
+				if int(o["owner"]) == si:
+					hold[si] = 0.0
+				else:
+					hold[si] += dt
+					if hold[si] >= BattleRules.OBJ_HOLD:
+						o["owner"] = si
+						hold[si] = 0.0
+						if emit_fx:
+							fx.append({"e": "objective", "name": o["name"], "side": si, "x": ox, "y": oy, "kind": o["kind"]})
+
+## Obiettivi tenuti per lato: [attaccante, difensore].
+func objectives_held() -> Array:
+	var h := [0, 0]
+	for o in objectives:
+		var w: int = int(o["owner"])
+		if w >= 0:
+			h[w] += 1
+	return h
+
+## Esito allo scadere del tempo (o di uno stallo): con obiettivi decide chi ne tiene di più (parità → difensore);
+## senza obiettivi (campo pulito) vale la vecchia regola di forza (_stall_winner).
+func _time_winner() -> String:
+	if objectives.is_empty():
+		return _stall_winner()
+	var h := objectives_held()
+	if h[0] == 0 and h[1] == 0:
+		return _stall_winner()   # nessuno ha preso nulla: decide la forza rimasta (difensori in copertura ×1.5)
+	return "att" if h[0] > h[1] else "def"
+
+# ---------------------------------------------------------------------------- omogeneità: rinforzi
+## I rinforzi dai territori vicini entrano dal proprio bordo (terzo nord o sud del campo) al tempo stabilito.
+func _upd_reinf() -> void:
+	for si in 2:
+		var r = reinf[si]
+		if r == null or bool(r["arrived"]) or time < float(r["t"]):
+			continue
+		r["arrived"] = true
+		var f: Dictionary = r["forces"]
+		var dir := 1 if si == 0 else -1
+		var x0 := 90.0 if si == 0 else W - 90.0
+		var yc: float = (TOP + 420.0) if int(r["dir"]) < 0 else (BOTTOM - 420.0)
+		var S: Dictionary = sides[si]
+		var g: int = int(S["g"])
+		var k_i := 0
+		var added: Array = []
+		for k in Data.UNIT_KEYS:
+			var n := int(f.get(k, 0))
+			if n <= 0:
+				continue
+			var count := int(ceil(float(n) / g))
+			for j in count:
+				var x := x0 + dir * (float(k_i % 3) * 70.0 + (j / 6) * 70.0)
+				var y := yc + ((j % 6) - 2.5) * 70.0 + (_mrng.randf() - 0.5) * 20.0
+				var u := _add_unit(si, k, clampf(x, 60.0, W - 60.0), clampf(y, TOP + 40.0, BOTTOM - 40.0), mini(g, n - j * g))
+				u.reinf = true
+				added.append(u)
+			k_i += 1
+		for u in added:
+			if not u.air:
+				_push_out(u)
+			u.ax = u.x; u.ay = u.y
+			_elist[si].append(u)
+			# verso il fronte: il difensore raggiunge la propria linea, l'attaccante avanza sul campo
+			var fx_ := (W - 1150.0 - 300.0) if si == 1 else 1900.0
+			if si == 1:
+				u.role = "post"; u.rx = fx_; u.ry = u.y
+			order_unit(u, AMOVE, fx_, u.y, null)
+		if emit_fx:
+			fx.append({"e": "reinf", "side": si, "x": x0, "y": yc, "n": Data.total_units(f)})
+		_upd_vis(true)
+
+## Rinforzi non ancora arrivati del lato: secondi mancanti (-1 se nessuno).
+func reinf_eta(si: int) -> float:
+	var r = reinf[si]
+	if r == null or bool(r["arrived"]):
+		return -1.0
+	return maxf(0.0, float(r["t"]) - time)
+
+# ---------------------------------------------------------------------------- omogeneità: ritirata ordinata
+## Ordina a tutto il lato di ripiegare verso il proprio bordo; chi lo raggiunge è salvo (escaped), chi resta combatte.
+func _order_retreat(si: int) -> void:
+	if retreating[si]:
+		return
+	retreating[si] = true
+	for u in units:
+		if u.dead or u.side != si or u.stat:
+			continue
+		u.hold = false
+		u.role = "retreat"
+		if u.air:
+			_escape(u)
+		else:
+			order_unit(u, MOVE, _edge_x(si), u.y, null)
+	if emit_fx:
+		fx.append({"e": "retreat", "side": si})
+
+func _edge_x(si: int) -> float:
+	return BattleRules.RETREAT_EDGE * 0.5 if si == 0 else W - BattleRules.RETREAT_EDGE * 0.5
+
+func _upd_retreat(si: int) -> void:
+	var ex := _edge_x(si)
+	for u in _elist[si]:
+		if u.stat or u.dead:
+			continue
+		var at_edge: bool = (u.x <= BattleRules.RETREAT_EDGE) if si == 0 else (u.x >= W - BattleRules.RETREAT_EDGE)
+		if at_edge or u.air:
+			_escape(u)
+		elif u.order != MOVE or absf(u.ox - ex) > 1.0:
+			u.hold = false
+			order_unit(u, MOVE, ex, u.y, null)
+
+## Il reparto lascia il campo sano e salvo.
+func _escape(u: Unit) -> void:
+	if u.dead:
+		return
+	var n := alive(u)
+	var bag: Dictionary = escaped[u.side]["reinf" if u.reinf else "main"]
+	bag[u.type] = int(bag.get(u.type, 0)) + n
+	u.escaped = true
+	u.dead = true; u.hp = 0; u.tgt = null; u.otgt = null
+	if u.sel:
+		u.sel = false
+	for si in 2:
+		_drop_ghost(si, u.id)
+	if emit_fx:
+		fx.append({"e": "escape", "u": u, "x": u.x, "y": u.y, "type": u.type, "side": u.side, "n": n})
+
 ## Distanza minima da una strada sterrata (solo terreni non urbani).
 func road_dist(x: float, y: float) -> float:
 	var best := 1e9
@@ -683,6 +976,10 @@ func _build_cover() -> void:
 	for b in bunker_pos:
 		var bx: float = b.x; var by: float = b.y
 		put.call(bx - 90, by - 90, bx + 90, by + 90, func(px, py): return (px - bx) * (px - bx) + (py - by) * (py - by) < 90.0 * 90.0, 2, 0)
+	# luoghi (edifici del territorio): copertura pesante come un isolato
+	for lm in landmarks:
+		var lx: float = lm["x"]; var ly: float = lm["y"]; var lw: float = lm["w"]; var lh: float = lm["h"]
+		put.call(lx - 30, ly - 30, lx + lw + 30, ly + lh + 30, func(_px, _py): return true, 2, 2)
 	# punti di copertura percorribili per l'IA (griglia di 90 px)
 	cover_spots.clear()
 	var yy := TOP + 60.0
@@ -902,14 +1199,20 @@ func _count_mobile(si: int) -> int:
 			n += alive(u)
 	return n
 
-func _survivors(si: int) -> Dictionary:
+## Superstiti del lato: forza principale (sul campo + salvi in ritirata), entro le forze iniziali.
+func _survivors(si: int, reinforcements := false) -> Dictionary:
 	var f := Data.empty_forces()
-	var orig: Dictionary = sides[si]["forces"]
+	var orig: Dictionary
+	if reinforcements:
+		orig = reinf[si]["forces"] if reinf[si] != null else Data.empty_forces()
+	else:
+		orig = sides[si]["forces"]
 	for u in units:
-		if not u.dead and not u.stat and u.side == si:
+		if not u.dead and not u.stat and u.side == si and u.reinf == reinforcements:
 			f[u.type] += alive(u)
+	var esc: Dictionary = escaped[si]["reinf" if reinforcements else "main"]
 	for k in Data.UNIT_KEYS:
-		f[k] = maxi(0, mini(int(orig.get(k, 0)), f[k]))
+		f[k] = maxi(0, mini(int(orig.get(k, 0)), f[k] + int(esc.get(k, 0))))
 	return f
 
 func power(si: int) -> float:
@@ -1093,7 +1396,7 @@ func step(dt: float) -> void:
 			S["smoke_cd"] -= dt
 		if S["hurt"] > 0:
 			S["hurt"] *= maxf(0.0, 1.0 - dt * 0.35)
-		if not S["human"] or ai_assist[si]:
+		if (not S["human"] or ai_assist[si]) and not retreating[si]:
 			S["ai"]["t"] -= dt
 			if S["ai"]["t"] <= 0:
 				S["ai"]["t"] = 2.0 if fast else 1.0
@@ -1110,6 +1413,21 @@ func step(dt: float) -> void:
 	for u in units:
 		if not u.dead:
 			_elist[u.side].append(u)
+	if reinf[0] != null or reinf[1] != null:
+		_upd_reinf()
+	if not objectives.is_empty():
+		_upd_objectives(dt)
+	_obj_t -= dt
+	if _obj_t <= 0.0:
+		_obj_t = 1.0
+		for si in 2:
+			if retreating[si]:
+				_upd_retreat(si)
+		# l'IA attaccante ormai battuta ripiega per salvare i reparti (docs/omogeneita.md §1)
+		if not retreating[0] and (ai_assist[0] or not sides[0]["human"]) and time > BattleRules.AI_RETREAT_T and ending == null:
+			var p1 := power(1)
+			if p1 > 0.0 and power(0) < p1 * BattleRules.AI_RETREAT_K and _count_mobile(0) > 0:
+				_order_retreat(0)
 	for i in units.size():
 		var u: Unit = units[i]
 		if not u.dead:
@@ -1958,7 +2276,7 @@ func _check() -> void:
 	if dm == 0:
 		_end("att", ""); return
 	if am == 0:
-		_end("def", ""); return
+		_end("def", "ritirata" if retreating[0] else ""); return
 	var can_a := false
 	var can_d := false
 	for a in pa:
@@ -1976,9 +2294,11 @@ func _check() -> void:
 	if stall_t >= STALL:
 		_end("def", "stallo"); return
 	var lim := NO_DMG_HUMAN if (hs >= 0 and not ai_assist[hs]) else NO_DMG_AI
-	if time - last_dmg > lim or time > MAX_TIME:
-		# stallo: se l'attaccante è nettamente più forte i resti nascosti del difensore si arrendono / ripiegano
-		_end(_stall_winner(), "stallo")
+	if time >= BattleRules.BATTLE_T:
+		_end(_time_winner(), "tempo")
+	elif time - last_dmg > lim:
+		# stallo: decidono gli obiettivi; senza obiettivi, se l'attaccante è nettamente più forte i resti del difensore ripiegano
+		_end(_time_winner(), "stallo")
 
 ## Esito di uno stallo (nessun danno per molto tempo) o del tempo scaduto: tiene il difensore salvo netta superiorità
 ## dell'attaccante rispetto a ciò che resta, con i difensori in copertura più difficili da stanare.
@@ -2022,13 +2342,20 @@ func _end(winner: String, why: String) -> void:
 	if ending != null or done:
 		return
 	ending = {"winner": winner, "t": END_MSG, "why": why}
-	result = {"att": _survivors(0), "def": _survivors(1), "winner": winner, "retreated": false, "autoRest": false}
+	result = _make_result(winner, retreating[0] and winner == "def")
 
+## Risultato: superstiti della forza principale (att/def), dei rinforzi (attReinf/defReinf), obiettivi tenuti.
+func _make_result(winner: String, retreated: bool) -> Dictionary:
+	return {"att": _survivors(0), "def": _survivors(1), "winner": winner, "retreated": retreated, "autoRest": false,
+		"attReinf": _survivors(0, true), "defReinf": _survivors(1, true), "objectives": objectives_held(), "time": time,
+		"why": String(ending["why"]) if ending != null else ""}
+
+## Ritirata ordinata (solo attaccante umano): i reparti ripiegano al proprio bordo; chi lo raggiunge è salvo, chi resta
+## combatte. La battaglia finisce quando l'attaccante non ha più unità sul campo (vince il difensore, `retreated: true`).
 func retreat() -> bool:
-	if done or ending != null or hs != 0:
+	if done or ending != null or hs != 0 or retreating[0]:
 		return false
-	result = {"att": _survivors(0), "def": _survivors(1), "winner": "def", "retreated": true, "autoRest": false}
-	done = true
+	_order_retreat(0)
 	return true
 
 ## Risolve il resto della battaglia simulandolo davvero (entrambi i lati IA, senza fx, passo grosso).
@@ -2036,7 +2363,7 @@ func retreat() -> bool:
 func auto_resolve() -> bool:
 	if done or ending != null:
 		return false
-	run_headless(time + AUTO_MAX_TIME)
+	run_headless(BattleRules.BATTLE_T + 1.0)
 	return true
 
 ## Simula fino alla fine (o fino a `max_time` s di battaglia) senza vista. Restituisce il risultato.
@@ -2055,8 +2382,8 @@ func run_headless(max_time: float = AUTO_MAX_TIME, dt: float = AUTO_DT) -> Dicti
 		guard += 1
 	if not done:
 		if ending == null:
-			# tempo scaduto: vince l'attaccante solo se nettamente più forte, altrimenti tiene il difensore
-			_end(_stall_winner(), "tempo")
+			# tempo scaduto: decidono gli obiettivi (senza obiettivi: vince l'attaccante solo se nettamente più forte)
+			_end(_time_winner(), "tempo")
 		done = true
 	return result
 

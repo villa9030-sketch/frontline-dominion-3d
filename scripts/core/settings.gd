@@ -12,6 +12,7 @@ signal changed(key: String)
 const PATH := "user://settings.cfg"
 const DEFAULTS := {
 	"quality": "medio",
+	"upscale": "nativo",   # scalatura 3D: nativo (MSAA della qualità) | taa (antialias temporale) | fsr2 (AMD FSR 2.2 al 67%)
 	"fullscreen": false,   # primo avvio in finestra massimizzata (più prudente); Alt+Invio / impostazioni per lo schermo intero
 	"vol_master": 0.8,
 	"vol_sfx": 0.75,
@@ -32,8 +33,10 @@ const AI_SPEED_KEYS := ["lenta", "normale", "veloce", "istantanea"]
 const AI_SPEED_NAMES := {"lenta": "Lenta", "normale": "Normale", "veloce": "Veloce", "istantanea": "Istantanea"}
 ## Secondi di animazione per ogni mossa dell'IA (opts.ai_step_delay del nucleo).
 const AI_STEP_DELAY := {"lenta": 1.6, "normale": 0.9, "veloce": 0.4, "istantanea": 0.0}
-const QUALITY_KEYS := ["basso", "medio", "alto"]
-const QUALITY_NAMES := {"basso": "Bassa", "medio": "Media", "alto": "Alta"}
+const QUALITY_KEYS := ["basso", "medio", "alto", "ultra"]
+const QUALITY_NAMES := {"basso": "Bassa", "medio": "Media", "alto": "Alta", "ultra": "Ultra"}
+const UPSCALE_KEYS := ["nativo", "taa", "fsr2"]
+const UPSCALE_NAMES := {"nativo": "Nativa", "taa": "TAA", "fsr2": "FSR 2.2"}
 
 var _v := {}
 var _save_pending := false
@@ -46,6 +49,12 @@ func _ready() -> void:
 		for k in DEFAULTS.keys():
 			if cf.has_section_key("settings", k):
 				_v[k] = _coerce(k, cf.get_value("settings", k))
+	# test automatici: --quality=basso|medio|alto|ultra forza la qualità (mai salvata: _windowed_env)
+	var shot := get_node_or_null("/root/Shot")
+	if _windowed_env() and shot != null and shot.has_method("arg") and String(shot.call("arg", "quality", "")) != "":
+		_v["quality"] = _coerce("quality", shot.call("arg", "quality", ""))
+	if _windowed_env() and shot != null and shot.has_method("arg") and String(shot.call("arg", "upscale", "")) != "":
+		_v["upscale"] = _coerce("upscale", shot.call("arg", "upscale", ""))
 	call_deferred("apply_all")
 
 func _coerce(k: String, v):
@@ -58,6 +67,8 @@ func _coerce(k: String, v):
 			if k == "quality" and not QUALITY_KEYS.has(String(v)):
 				return d
 			if k == "ai_speed" and not AI_SPEED_KEYS.has(String(v)):
+				return d
+			if k == "upscale" and not UPSCALE_KEYS.has(String(v)):
 				return d
 			return String(v)
 		TYPE_DICTIONARY: return v if v is Dictionary else {}
@@ -119,14 +130,14 @@ func save() -> void:
 
 # ------------------------------------------------------------------ applicazione
 func apply_all() -> void:
-	for k in ["fullscreen", "quality", "vol_master", "vol_sfx", "vol_music"]:
+	for k in ["fullscreen", "quality", "vol_master", "vol_sfx", "vol_music"]:   # "quality" applica anche "upscale"
 		_apply(k)
 
 func _apply(key: String) -> void:
 	match key:
 		"fullscreen":
 			_apply_window()
-		"quality":
+		"quality", "upscale":
 			_apply_quality(get_viewport())
 		"vol_master":
 			var bus := AudioServer.get_bus_index("Master")
@@ -183,12 +194,32 @@ func _apply_quality(vp: Viewport) -> void:
 			vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 			vp.scaling_3d_scale = 1.0
 			vp.mesh_lod_threshold = 0.5
+		"ultra":
+			vp.msaa_3d = Viewport.MSAA_4X
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+			vp.scaling_3d_scale = 1.0
+			vp.mesh_lod_threshold = 0.25
 		_:
 			vp.msaa_3d = Viewport.MSAA_2X
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 			vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 			vp.scaling_3d_scale = 1.0
 			vp.mesh_lod_threshold = 1.0
+	# scalatura opzionale: sostituisce l'antialias della qualità (con "nativo" restano i valori sopra, invariati)
+	vp.use_taa = false
+	match String(_v.get("upscale", "nativo")):
+		"taa":
+			vp.use_taa = true
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+		"fsr2":
+			# FSR 2.2: rendering 3D al 67% ricostruito a piena risoluzione (contiene già l'antialias temporale)
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+			vp.scaling_3d_scale = 0.67
+			vp.fsr_sharpness = 0.3
 
 ## Ritardo tra le mosse dell'IA (s) secondo l'impostazione «Velocità turni IA».
 func ai_step_delay() -> float:
