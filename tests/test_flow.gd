@@ -225,6 +225,8 @@ func _process(_dt: float) -> bool:
 			var hq2 := int(main.game.players[main.h()]["hq"])
 			main._on_map_clicked(hq2, MOUSE_BUTTON_LEFT, false)
 			C.update()
+			check(C.step == "army", "tutorial: come formare l'esercito (passo %s)" % C.step)
+			C._on_next()
 			check(C.step == "recruit", "tutorial: recluta (passo %s)" % C.step)
 			main.act("recruit", {"u": "inf", "n": 1})
 			C.update()

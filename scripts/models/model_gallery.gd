@@ -50,6 +50,9 @@ func _ready() -> void:
 	if demo == "anim":
 		_anim_demo()
 		return
+	if demo == "soldiers":
+		_sol_next()
+		return
 	if demo in ["lineup", "blast"]:
 		_lineup_demo()
 		return
@@ -487,6 +490,7 @@ func _look(from: Vector3, to: Vector3) -> void:
 ## Collaudo dell'animazione della fanteria (soldier.gdshader): --demo=anim [--faction=N] [--state=walk,run,kneel,fire,cover,die,idle]
 ## [--spd=m/s] [--dist=m] [--yaw=gradi]. Le squadre in marcia avanzano davvero (verifica che i piedi non scivolino).
 var anim_sq: Array = []
+var die_at := -99.0
 func _anim_demo() -> void:
 	var states := Shot.arg("state", "walk,run,fire,cover,die").split(",")
 	var fac := int(Shot.arg("faction", "1"))
@@ -512,7 +516,8 @@ func _anim_update(delta: float) -> void:
 		var ph: float = sq[3] + spd * delta * UnitModels.inf_step_rate(spd)
 		sq[3] = ph
 		if spd > 0.0:
-			m.position.z = (sq[4] as Vector3).z + 3.0 - fmod(t * spd, 6.0)
+			var fw := -m.basis.z   # avanti del modello (con la scala): i piedi devono restare fermi a terra
+			m.position = (sq[4] as Vector3) + fw * (fmod(t * spd, 6.0) - 3.0)
 		var a := Vector4.ZERO
 		match st:
 			"walk", "run": a = UnitModels.inf_anim_vec(ph, spd, 0.0, 0.0, false)
@@ -520,8 +525,101 @@ func _anim_update(delta: float) -> void:
 			"aim": a = UnitModels.inf_anim_vec(ph, 0.0, 0.0, 1.0, true)
 			"fire", "kneel": a = UnitModels.inf_anim_vec(ph, 0.0, 1.0, 1.0, st == "fire")
 			"cover": a = UnitModels.inf_anim_vec(ph, 0.0, 1.0, 0.0, false)
-			"die": a = UnitModels.inf_anim_vec(ph, 0.0, 0.0, 0.0, false, maxf(0.0, t - float(Shot.arg("die_at", "0.5"))))
+			"die": a = UnitModels.inf_anim_vec(ph, 0.0, 0.0, 0.0, false, maxf(0.0, t - (die_at if die_at > -9.0 else float(Shot.arg("die_at", "0.5")))))
 		(sq[2] as GeometryInstance3D).set_instance_shader_parameter(&"anim", a)
+
+## Collaudo dei soldati, più scatti in un avvio: --demo=soldiers [--shots=fac0,fac1,...] [--prefix=docs/screens/soldiers_after_]
+## [--each=frames] [--lod=N] [--stats]. Scatti: fac0..fac3, generic (squadra da vicino), lineup (tutte le fazioni), roles (di lato),
+## walk / walk120 (marcia e corsa da vicino e a 120 m, scala di battaglia 1.3), kneel (in ginocchio, fuoco, riparo, caduta).
+const SOL_SHOTS := ["face", "fac0", "fac1", "fac2", "fac3", "generic", "lineup", "roles", "walk", "walk120", "kneel"]
+var sol_list: Array = []
+var sol_i := -1
+var sol_wait := 0
+var sol_root: Node3D
+
+func _sol_squad(fac: int, st: String, pos: Vector3, sc: float = 1.0, yaw: float = 0.0) -> void:
+	var m := UnitModels.build("inf", Data.faction_color(fac), int(Shot.arg("lod", "0")), fac)
+	m.position = pos
+	m.scale = Vector3.ONE * sc
+	m.rotation.y = yaw
+	sol_root.add_child(m)
+	var bd := m.get_node("Body") as GeometryInstance3D
+	bd.set_instance_shader_parameter(&"seed", float(anim_sq.size()) * 3.7 + 1.3)
+	anim_sq.append([m, st, bd, float(anim_sq.size()) * 1.1, pos])
+	if Shot.has_arg("stats") and st == "idle":
+		print("[soldiers] fac %d tris/squad %d (lod %s)" % [fac, int(m.get_meta("tris", 0)), Shot.arg("lod", "0")])
+
+func _sol_cam(target: Vector3, d: float, yaw_deg: float, el_deg: float, fov: float = 50.0) -> void:
+	var yw := deg_to_rad(yaw_deg)   # 0 = davanti ai soldati (guardano verso -Z)
+	var el := deg_to_rad(el_deg)
+	cam.fov = fov
+	_look(target + Vector3(sin(yw) * cos(el), sin(el), -cos(yw) * cos(el)) * d, target)
+
+func _sol_next() -> void:
+	if sol_i < 0:
+		sol_list = Array(Shot.arg("shots", ",".join(SOL_SHOTS)).split(","))
+	sol_i += 1
+	if sol_i >= sol_list.size():
+		get_tree().quit()
+		return
+	if sol_root != null:
+		sol_root.queue_free()
+	anim_sq.clear()
+	t = 0.0
+	sol_root = Node3D.new()
+	add_child(sol_root)
+	var z0 := 200.0
+	var sh: String = sol_list[sol_i]
+	sun.directional_shadow_max_distance = 60
+	match sh:
+		"fac0", "fac1", "fac2", "fac3", "generic":
+			var f := -1 if sh == "generic" else int(sh.substr(3))
+			_sol_squad(f, "idle", Vector3(0, 0, z0))
+			_sol_cam(Vector3(0, 0.9, z0 + 0.2), 6.2, 32, 12, 45)
+		"lineup":
+			var facs := [0, 1, 2, 3, -1]
+			for i in 5:
+				_sol_squad(facs[i], "idle", Vector3((i - 2) * 5.5, 0, z0))
+			_sol_cam(Vector3(0, 0.8, z0), 17, 8, 14, 50)
+		"face":
+			_sol_squad(int(Shot.arg("fac", "1")), "idle", Vector3(0, 0, z0))
+			_sol_squad(int(Shot.arg("fac2", "3")), "idle", Vector3(3.2, 0, z0 + 1.0))
+			_sol_cam(Vector3(0.3, 1.45, z0 - 1.4), 2.6, 25, 4, 45)
+		"roles":
+			_sol_squad(int(Shot.arg("fac", "0")), "idle", Vector3(0, 0, z0))
+			_sol_cam(Vector3(0, 0.9, z0 + 0.2), 6.0, 80, 8, 45)
+		"walk":
+			_sol_squad(1, "walk", Vector3(-3.2, 0, z0))
+			_sol_squad(0, "run", Vector3(3.2, 0, z0))
+			_sol_cam(Vector3(0, 0.9, z0), 11, 70, 10, 50)
+		"walk120":
+			for i in 4:
+				_sol_squad(i, "run" if i % 2 == 0 else "walk", Vector3((i - 1.5) * 9.0, 0, z0), 1.3, PI * 0.5)
+			sun.directional_shadow_max_distance = 220
+			# fov 30 a 960×540 ≈ dimensione in pixel della battaglia a 1600×900 con fov 48
+			_sol_cam(Vector3(0, 1.0, z0), float(Shot.arg("far", "120")), 20, 22, 30)
+		"kneel":
+			die_at = -1.2
+			var sts := ["kneel", "fire", "cover", "die"]
+			for i in 4:
+				_sol_squad(i, sts[i], Vector3((i - 1.5) * 5.0, 0, z0))
+			_sol_cam(Vector3(0, 0.6, z0), 13, 25, 16, 50)
+	sol_wait = int(Shot.arg("each", "50"))
+
+func _sol_step() -> void:
+	sol_wait -= 1
+	if sol_wait == 0:
+		_sol_save()
+
+func _sol_save() -> void:
+	await RenderingServer.frame_post_draw
+	var img := get_viewport().get_texture().get_image()
+	if img.get_width() > 960:
+		img.resize(960, 540, Image.INTERPOLATE_LANCZOS)
+	var path := ProjectSettings.globalize_path("res://").path_join(Shot.arg("prefix", "docs/screens/soldiers_after_") + String(sol_list[sol_i]) + ".png")
+	img.save_png(path)
+	print("[soldiers] salvato ", path)
+	_sol_next()
 
 ## Primo piano di mezzi in marcia: --demo=lineup --faction=N --kinds=tank,art,aa [--mud=0.5] [--spd=m/s] [--yaw=gradi] [--el=gradi]
 ## [--dist=m] [--deploy=1]: ruote e cingoli girano (UnitModels.set_motion), fango accumulato, numeri tattici, artiglieria piazzata.
@@ -615,6 +713,9 @@ func _process(delta: float) -> void:
 		if fr == 361:
 			print("[perf] demo=%s legacy=%s frames=%d cpu_render=%.2f ms gpu=%.2f ms fps=%d" % [demo, str(not ModelKit.use_shaders), perf_n, perf_cpu / perf_n, perf_gpu / perf_n, Engine.get_frames_per_second()])
 			get_tree().quit()
+	if demo == "soldiers":
+		_sol_step()
+		return
 	if Shot.has_arg("multi"):
 		_multi_step()
 	for mv in movers:

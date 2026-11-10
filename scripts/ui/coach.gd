@@ -20,20 +20,21 @@ var _t := 0.0
 var _rect = null            # Rect2 dell'elemento indicato (o null)
 var _entered := 0.0
 
-const ORDER := ["intro", "deploy", "recruit", "endphase", "source", "target", "panel", "result", "move", "endturn", "ai", "done"]
+const ORDER := ["intro", "deploy", "army", "recruit", "endphase", "source", "target", "panel", "result", "move", "endturn", "ai", "done"]
 const TITLES := {
 	"intro": "Benvenuto, comandante",
 	"deploy": "1 · Schiera i rinforzi",
-	"recruit": "2 · Recluta nuove truppe",
-	"endphase": "3 · Passa all'attacco",
-	"source": "4 · Scegli da dove attaccare",
-	"skipatk": "4 · Niente attacchi utili",
-	"target": "5 · Scegli il bersaglio",
-	"panel": "6 · Il pannello d'attacco",
-	"result": "7 · Esito della battaglia",
-	"move": "8 · Spostamento (facoltativo)",
-	"endturn": "9 · Fine del turno",
-	"ai": "10 · Il turno delle IA",
+	"army": "2 · Come formare l'esercito",
+	"recruit": "3 · Recluta nuove truppe",
+	"endphase": "4 · Passa all'attacco",
+	"source": "5 · Scegli da dove attaccare",
+	"skipatk": "5 · Niente attacchi utili",
+	"target": "6 · Scegli il bersaglio",
+	"panel": "7 · Il pannello d'attacco",
+	"result": "8 · Esito della battaglia",
+	"move": "9 · Spostamento (facoltativo)",
+	"endturn": "10 · Fine del turno",
+	"ai": "11 · Il turno delle IA",
 	"defense": "Ti attaccano!",
 	"done": "Pronto al comando",
 }
@@ -100,7 +101,8 @@ func skip() -> void:
 
 func _on_next() -> void:
 	match step:
-		"intro": _go("deploy" if _pool() > 0 else "recruit")
+		"intro": _go("deploy" if _pool() > 0 else "army")
+		"army": _go("recruit")
 		"recruit": _go("endphase")
 		"move": _go("endturn")
 		"done": stop(true)
@@ -116,7 +118,7 @@ func _go(id: String) -> void:
 				_go("recruit")
 				return
 			_focus(_hq())
-		"recruit":
+		"army", "recruit":
 			if not main.my_phase("supply"):
 				_go("source")
 				return
@@ -145,8 +147,8 @@ func _go(id: String) -> void:
 	var i := ORDER.find(id)
 	step_lbl.text = ("PASSO %d/%d" % [i, ORDER.size() - 2]) if i >= 1 and i <= ORDER.size() - 2 else ""
 	text_lbl.text = _text(id)
-	btn_next.visible = id in ["intro", "recruit", "move", "done"]
-	btn_next.text = {"intro": "Inizia  ›", "recruit": "Salta questo passo  ›", "move": "Non spostare  ›", "done": "Fine  ✓"}.get(id, "Avanti  ›")
+	btn_next.visible = id in ["intro", "army", "recruit", "move", "done"]
+	btn_next.text = {"intro": "Inizia  ›", "army": "Ho capito  ›", "recruit": "Salta questo passo  ›", "move": "Non spostare  ›", "done": "Fine  ✓"}.get(id, "Avanti  ›")
 	btn_skip.visible = id != "done"
 	# sotto le finestre (pannello d'attacco, difesa) il riquadro è largo e basso per stare nello spazio libero
 	var wide := id in ["panel", "defense"]
@@ -168,6 +170,10 @@ func _text(id: String) -> String:
 			return "Ti guido nel [b]primo turno[/b]. Ogni turno ha [b]tre fasi[/b]: [color=#7fe08f]Rifornimento[/color] › [color=#ff8a6a]Attacco[/color] › [color=#8ad6ff]Spostamento[/color]. Poi giocano le IA.\nIl riquadro [b]ORDINI[/b] in basso ti dice sempre cosa fare."
 		"deploy":
 			return "Hai [b]%d rinforzi[/b]. I tuoi territori [color=#7fe08f]pulsano in verde[/color]: [b]clicca il tuo QG ★ %s[/b] (indicato dalla freccia) per schierarli lì." % [_pool(), Data.TERRITORIES[_hq()]["name"]]
+		"army":
+			return "I [b]rinforzi gratis[/b] di ogni turno sono [b]fanteria[/b]: ottima per [b]difendere[/b] boschi e città.
+Per [b]attaccare[/b] recluta [b]carri[/b] e [b]artiglieria[/b] dove hai una [b]Fabbrica[/b] (il QG ★ vale come caserma e fabbrica): nascono in quel territorio. Un [b]esercito misto[/b] batte uno numeroso di un solo tipo.
+La [b]ricerca[/b] (pulsante in alto) vale per [b]tutti[/b] i tuoi territori; gli edifici solo dove li costruisci."
 		"recruit":
 			return "A destra c'è il pannello del territorio. Nella scheda [b]Recluta[/b] premi [b]+1[/b] accanto a [b]Fanteria[/b]: la nuova unità arriverà al prossimo turno.\nNelle altre schede costruisci edifici e fortificazioni."
 		"endphase":
@@ -207,8 +213,11 @@ func update() -> void:
 	match step:
 		"deploy":
 			if _pool() <= 0:
-				_go("recruit")
+				_go("army")
 			elif not mine or ph != "supply":
+				_go("source" if mine else "ai")
+		"army":
+			if not mine or ph != "supply":
 				_go("source" if mine else "ai")
 		"recruit":
 			if _queued() > _q0:
@@ -292,6 +301,9 @@ func _target_rect():
 		"recruit":
 			var b := _find_button(main.hud.rp.get("recruit"), "+1")
 			return b.get_global_rect() if b != null else null
+		"army":
+			var rc: Control = main.hud.rp.get("recruit")
+			return rc.get_global_rect() if rc != null and rc.is_visible_in_tree() else null
 		"endphase", "result", "skipatk", "endturn":
 			var gm: Button = main.hud.g_main
 			return gm.get_global_rect() if gm != null and gm.is_visible_in_tree() else null
@@ -354,7 +366,7 @@ func _place() -> void:
 			var mx := MR.get_center().x - S.x / 2
 			cands = [Vector2(mx, MR.end.y + 12), Vector2(mx, MR.position.y - S.y - 12),
 				Vector2(MR.position.x - S.x - 24, R.position.y - S.y * 0.5), Vector2(MR.end.x + 24, R.position.y - S.y * 0.5), left]
-		elif step in ["panel", "defense", "recruit"]:
+		elif step in ["panel", "defense", "recruit", "army"]:
 			cands = [left, right, above, below]
 		elif step == "done":
 			cands = [right]

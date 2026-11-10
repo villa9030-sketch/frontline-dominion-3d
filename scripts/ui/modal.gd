@@ -175,11 +175,16 @@ func build_help() -> Control:
 	_hsec(c1, "La schermata", "Il riquadro [b]ORDINI[/b] in basso dice sempre cosa fare adesso e mostra l'esito dell'ultima azione. Sul tabellone [b]pulsa[/b] ciò che puoi cliccare: [color=#7fe08f]verde[/color] dove schierare, [color=#ffc060]ambra[/color] da dove attaccare, [color=#ff8a6a]rosso[/color] i bersagli, [color=#8ad6ff]azzurro[/color] gli spostamenti. La barra a icone a [b]sinistra[/b] apre obiettivo, potenze, carte, mercato, continenti e registro; il pannello a [b]destra[/b] mostra il territorio selezionato con le schede Recluta / Edifici / Fortifica. Il [b]Tutorial[/b] del menu guida il primo turno.")
 	_hsec(c1, "Obiettivo", "[b]Conquista mondiale[/b]: controlla il %d%% dei territori o elimina tutti gli avversari. [b]Obiettivo segreto[/b]: in più puoi vincere completando la tua missione (continenti, numero di territori o eliminare un rivale)." % int(round(E["victoryShare"] * 100)))
 	var tr := int(main.game.truce_rounds) if (main.game != null and "truce_rounds" in main.game) else 2
-	_hsec(c1, "Turni", "Il tabellone strategico si gioca [b]a turni[/b], come a Risiko: prima tu, poi ogni IA. Ogni turno ha tre fasi, indicate dalla barra in alto al centro:\n[b]1. Rifornimento[/b] — entrate e rinforzi del turno; recluti, costruisci, ricerchi, commerci, giochi le carte, assoldi mercenari, [b]schieri[/b] i rinforzi e [b]fortifichi[/b] (trincee, mine, bunker).\n[b]2. Attacco[/b] — al massimo [b]un attacco[/b] per turno da un tuo territorio a un nemico confinante (o via mare se hai un porto): scegli quante unità inviare (almeno una resta a casa) e se comandare la battaglia in 3D o risolverla in automatico.\n[b]3. Spostamento[/b] — [b]uno[/b] spostamento di truppe tra tuoi territori collegati.\nIl [b]pulsante principale del riquadro ORDINI[/b] (in basso) passa alla fase successiva o chiude il turno ([b]Invio[/b] = fine turno). Nei turni delle IA le loro mosse sono animate sul tabellone; [b]Spazio[/b] accelera e, premuto di nuovo, salta l'animazione. Se un'IA ti attacca scegli se [b]difenderti in prima persona[/b] (3D) o con la risoluzione automatica.")
+	_hsec(c1, "Turni", "Il tabellone strategico si gioca [b]a turni[/b], come a Risiko: prima tu, poi ogni IA. Ogni turno ha tre fasi, indicate dalla barra in alto al centro:\n[b]1. Rifornimento[/b] — entrate e rinforzi del turno; recluti, costruisci, ricerchi, commerci, giochi le carte, assoldi mercenari, [b]schieri[/b] i rinforzi e [b]fortifichi[/b] (trincee, mine, bunker).\n[b]2. Attacco[/b] — al massimo [b]un attacco[/b] per turno da un tuo territorio a un nemico confinante (o via mare se hai un porto): scegli quante unità inviare (almeno una resta a casa) e se comandare la battaglia in 3D o risolverla in automatico.\n[b]3. Spostamento[/b] — [b]uno[/b] spostamento di truppe tra tuoi territori collegati, a qualunque distanza.\nIl [b]pulsante principale del riquadro ORDINI[/b] (in basso) passa alla fase successiva o chiude il turno ([b]Invio[/b] = fine turno). Nei turni delle IA le loro mosse sono animate sul tabellone; [b]Spazio[/b] accelera e, premuto di nuovo, salta l'animazione. Se un'IA ti attacca scegli se [b]difenderti in prima persona[/b] (3D) o con la risoluzione automatica.")
 	_hsec(c1, "Il tabellone", "42 territori in 6 continenti. Ogni pedina mostra le unità presenti ([b]?[/b] = forze nascoste dell'Unione Libera in città). ★ = Quartier Generale. Le icone accanto alla pedina sono gli edifici. Anello ambra = costruzione, verde = reclutamento, cerchio arancio = territorio [b]senza rifornimenti[/b] (non collegato via terra al QG: produce e combatte peggio).")
 	_hsec(c1, "Economia", "Ogni territorio produce denaro e manodopera più la sua risorsa specializzata (valori [b]per turno[/b] nella barra in alto); il QG produce al 100%, gli altri al 60%. I mezzi consumano petrolio: a petrolio zero le tue forze combattono peggio. A ogni tuo turno ricevi [b]rinforzi[/b] (circa metà dei tuoi territori, minimo 4, + bonus dei continenti posseduti) da schierare. Reclutare richiede [b]1–3 turni[/b] (fanteria 1, carri 2, caccia 3), gli edifici 1–3 turni. Il [b]Mercato internazionale[/b] (scheda Mercato nella barra a sinistra) vende o compra lotti di petrolio, acciaio e manodopera: il prezzo cala se vendi spesso e sale se compri.")
 	_hsec(c1, "Regole del fronte", "[b]Tregua iniziale[/b]: nei primi %d turni si possono attaccare solo i territori neutrali (la barra mostra «Tregua: ancora N turni»). Ogni territorio rifornito arruola una [b]milizia[/b]; il QG è una roccaforte (difesa ×%s). Dopo una conquista le truppe si [b]riorganizzano[/b] per un turno (non possono ripartire) e il territorio resta [b]in occupazione[/b] per due turni. [b]Fortificazioni[/b] (pannello del territorio, fase di rifornimento): trincee (fanteria più resistente), campi minati (danni ai mezzi attaccanti), bunker (postazioni che sparano), ciascuna fino al livello 3; alla conquista trincee e mine si azzerano." % [tr, str(E["hqDef"])])
 	_hsec(c1, "Edifici e tecnologia", "Caserma (fanteria), Fabbrica (carri, artiglieria, contraerea), Aeroporto (mezzi aerei e ponte aereo da %s), Porto (attacchi via mare), Fortificazioni (difesa +30%%), Impianto (produzione +60%%). Il QG vale come caserma e fabbrica. La ricerca (pulsante in alto) porta da [b]Tech 1 · Guerra Fredda[/b] a [b]%s[/b] in 2–4 turni: sblocca nuove unità e dà +%d%% di attacco per livello." % [UIKit.tech_name(2), UIKit.tech_name(4), int(round(Data.TECH_COMBAT_BONUS * 100))])
+	_hsec(c1, "Come formare l'esercito", "• [b]Rinforzi gratis[/b] = [b]fanteria[/b] a ogni turno: ottima per [b]difendere[/b] (tiene boschi e città, letale contro i carri da vicino).
+• Per [b]attaccare[/b] recluta [b]carri[/b] (sfondano in campo aperto) e [b]artiglieria[/b] (colpisce da lontano, ottima contro bunker) dove hai una [b]Fabbrica[/b] o nel [b]QG[/b]; elicotteri, caccia e droni dove hai un [b]Aeroporto[/b]. Le unità reclutate [b]nascono in quel territorio[/b].
+• Un [b]esercito misto[/b] batte un esercito numeroso di un solo tipo: la fanteria tiene il terreno, i carri sfondano, l'artiglieria indebolisce, la contraerea protegge dagli aerei.
+• La [b]ricerca[/b] è [b]globale[/b]: vale in tutti i tuoi territori, sblocca nuove unità e dà più attacco. Gli [b]edifici[/b] valgono solo dove li costruisci.
+• Lo [b]spostamento[/b] non ha limiti di distanza: porta le truppe dove servono attraverso i tuoi territori collegati (uno per turno; con due aeroporti da Tech 2 anche per ponte aereo).")
 	_hsec(c2, "Comandi", "• [b]Clic sinistro[/b]: seleziona un territorio\n• [b]Attacco[/b]: seleziona un tuo territorio (almeno 2 unità), poi clic su un bersaglio evidenziato: si apre il pannello d'attacco con i cursori per ogni tipo di unità e la previsione\n• [b]Spostamento[/b]: nella terza fase, tuo territorio → clic su un tuo territorio evidenziato → [b]Sposta[/b]\n• [b]Rinforzi[/b]: nel rifornimento lo schieramento è già attivo, clic su un tuo territorio verde (N attiva/disattiva)\n• [b]Carte[/b] (scheda nella barra a sinistra): seleziona un tris (tre uguali, tre diverse o con jolly) e scegli l'operazione: rinforzi, missile, sabotaggio o golpe\n• [b]Fase successiva[/b] / [b]Fine turno[/b] (Invio): pulsante principale del riquadro ORDINI\n• [b]Telecamera[/b]: WASD o bordi per spostarti, rotella per lo zoom, Q/E per ruotare\n• [b]Spazio[/b] nei turni IA: accelera, di nuovo per saltare · [b]Esc[/b] annulla / menu · [b]F1/H[/b] questo aiuto · [b]F5/F9[/b] salvataggio/caricamento rapido")
 	_hsec(c2, "Battaglie", "Quando attacchi, o un'IA attacca te, puoi scegliere la [b]risoluzione automatica[/b] oppure [b]comandare la battaglia[/b] in tempo reale sul campo 3D, sia in attacco sia in [b]difesa[/b]. Terreno, fortificazioni, QG, tecnologia, rifornimenti, petrolio e [b]veterani[/b] influenzano lo scontro.\n[b]Il campo è grande[/b]: i carri colpiscono da centinaia di metri, l'artiglieria da un capo all'altro della mappa. Con la [b]rotella[/b] allontani la vista fino alla [b]vista d'insieme[/b]: i mezzi diventano [b]pedine[/b] con il simbolo del tipo e il numero di unità (le tue rettangolari, le nemiche con gli angoli smussati).\n[b]Vedere prima di sparare[/b]: vedi i nemici solo entro il raggio di vista delle tue unità; le zone non osservate sono più scure. Un nemico perso di vista lascia un [b]fantasma[/b] con «?» e da quanti secondi non lo vedi. «AVVISTATO» segnala un nemico appena scoperto (anche sulla minimappa).\n[b]Copertura[/b]: boschi e terreno accidentato danno copertura leggera, città e bunker pesante (passa il mouse sul terreno per saperlo). La [b]fanteria ferma al riparo resta nascosta[/b] finché non spara (icona a foglia sulle tue unità nascoste) ed è letale contro i carri da vicino. Il primo fuoco da posizione nascosta è un'[b]IMBOSCATA[/b]: danni ×2 per 4 s.\n[b]Corazza[/b]: i carri reggono di fronte ma subiscono ×1,6 sul [b]FIANCO[/b] e ×2,5 sul [b]RETRO[/b] (mezzi leggeri ×1,25 / ×1,5). Passando il mouse su un mezzo nemico vedi da che lato lo colpirebbero le tue unità selezionate: aggiralo.\n[b]Artiglieria[/b]: spara solo su nemici avvistati da qualcuno (o con il [b]fuoco d'area[/b], tasto [b]X[/b]); i colpi si disperdono di più a grande distanza; dopo ogni spostamento deve piazzarsi per qualche secondo e ha una gittata minima.\nSelezionando le unità vedi a terra la [b]gittata[/b] (linea piena), la [b]vista[/b] (tratteggio) e per l'artiglieria la [b]gittata minima[/b] (rosso).\nSul campo: prima lo [b]schieramento[/b] (clic destro nella tua zona, [b]Invio[/b] per iniziare; in difesa: fanteria nei boschi e in città, carri dietro i rilievi), poi [b]clic destro[/b] muovi/attacca · [b]G[/b] attacco in movimento · [b]H[/b] alt · [b]X[/b] fuoco d'area · [b]B[/b] sbarramento d'artiglieria · [b]Ctrl+A[/b] tutte le unità · [b]Ctrl+1..9[/b] gruppi · [b]C[/b] centra la selezione · [b]V[/b] vai all'allarme · [b]Home[/b] torna all'esercito · [b]WASD[/b]/[b]Q/E[/b] telecamera · [b]P/Spazio[/b] pausa · [b]Invio[/b] continua a fine battaglia.\n[b]Abilità[/b] (pulsanti in basso): [b]F[/b] cortina fumogena (meno danni dal fuoco diretto per alcuni secondi e più difficili da avvistare; poi ricarica) · [b]J[/b] supporto aereo (un caccia bombarda l'area indicata poco dopo la chiamata; una volta per battaglia) · [b]T[/b] mantieni posizione (i reparti restano fermi e sparano solo ai nemici a tiro; di nuovo T per sbloccarli).")
 	var fz := ""
@@ -506,6 +511,10 @@ func build_force_panel(kind: String, from: int, to: int) -> Control:
 		_fp["pred1"] = p1
 		_fp["pred2"] = p2
 		rc.add_child(pp)
+		var ch := UIKit.rich("", 14, Color("#e2e9e3"))
+		ch.custom_minimum_size.x = 340
+		_fp["comp"] = ch
+		rc.add_child(ch)
 	else:
 		var P: Dictionary = g.players[hh]
 		rc.add_child(_side(P, g.terr[to]["forces"], "DESTINAZIONE", hh, hh, main.vet_of(to)))
@@ -592,6 +601,8 @@ func _fp_refresh() -> void:
 		p1.add_theme_color_override("font_color", Color("#d0dce4"))
 		p2.text = "Scegli le forze da inviare" if n <= 0 else "Forze del difensore sconosciute (nebbia di guerra)"
 		pp.add_theme_stylebox_override("panel", UIKit.box(Color(0.55, 0.65, 0.72, 0.08), Color(0.6, 0.7, 0.78, 0.4), 1, 4, Vector4(12, 8, 12, 8)))
+		if _fp.has("comp"):
+			(_fp["comp"] as RichTextLabel).visible = false
 		return
 	var win: bool = String(pr.get("winner", "def")) == "att"
 	var left := float(pr.get("attLeft", pr.get("att_left", 0.0))) if win else float(pr.get("defLeft", pr.get("def_left", 0.0)))
@@ -611,6 +622,70 @@ func _fp_refresh() -> void:
 	if fog:
 		p2.text += " · difensore nella nebbia: previsione sulle forze stimate"
 	pp.add_theme_stylebox_override("panel", UIKit.box(Color(col, 0.08), Color(col, 0.45), 1, 4, Vector4(12, 8, 12, 8)))
+	# consigli sulla composizione (ruoli delle unità + previsione con tutte le forze disponibili)
+	var hints := comp_hints(int(_fp["from"]), int(_fp["to"]), f)
+	if not win:
+		var mv: Dictionary = main.movable_forces(int(_fp["from"]))
+		if Data.total_units(mv) > n:
+			var pa = main.predict_attack(int(_fp["from"]), int(_fp["to"]), mv)
+			if pa is Dictionary and String(pa.get("winner", "def")) == "att":
+				hints.push_front("[color=#7fe08f]Con tutte le unità disponibili (pulsante «Tutto») la previsione diventa favorevole.[/color]")
+			else:
+				hints.push_front("[color=#ffb59a]Anche con tutte le unità disponibili la previsione resta sfavorevole: rinforza prima questo territorio.[/color]")
+	if _fp.has("comp"):
+		var lines := []
+		for x in hints:
+			lines.append("• " + String(x))
+		(_fp["comp"] as RichTextLabel).text = "
+".join(lines)
+		(_fp["comp"] as RichTextLabel).visible = not lines.is_empty()
+
+## Consigli sulla composizione dell'attacco (ruoli delle unità contro terreno, difese e forze visibili del difensore).
+func comp_hints(from: int, to: int, f: Dictionary) -> Array:
+	var g = main.game
+	var out := []
+	var n := Data.total_units(f)
+	if n <= 0 or g == null:
+		return out
+	var ter := String(Data.TERRITORIES[to]["ter"])
+	var tname := String(Data.TERRAINS[ter]["name"]).to_lower()
+	var vis: bool = main.is_vis(to)
+	var df = main.gcall("visible_forces", [main.h(), to], null) if vis else null
+	var types := []
+	for k in Data.UNIT_KEYS:
+		if int(f.get(k, 0)) > 0:
+			types.append(k)
+	var fort := 0
+	if vis:
+		var lv: Dictionary = main.fort_levels(to)
+		for k in lv:
+			fort += int(lv[k])
+	var o := int(g.terr[to]["owner"])
+	var hq: bool = o >= 0 and int(g.players[o]["hq"]) == to
+	var bunker: bool = vis and g.terr[to]["buildings"].has("bunker")
+	var closed := ter in ["urbano", "foresta", "montagna"]
+	var where := {"urbano": "in città", "foresta": "nei boschi", "montagna": "in montagna"}
+	var warn := "[color=#ffc060]%s[/color]"
+	if types == ["inf"]:
+		if closed or fort > 0 or hq or bunker:
+			out.append(warn % ("Solo fanteria contro un nemico %s: rischioso. Carri e artiglieria aiutano a sfondare." % (where.get(ter, "fortificato") if closed else ("nel QG" if hq else "fortificato"))))
+		elif df is Dictionary and int(df.get("tank", 0)) > 0:
+			out.append(warn % "Solo fanteria contro carri in campo aperto: rischioso.")
+	if int(f.get("tank", 0)) > 0 and int(f.get("inf", 0)) == 0 and closed:
+		out.append(warn % ("Carri senza fanteria %s: vulnerabili da vicino. Aggiungi fanteria." % where.get(ter, "")))
+	if (fort > 0 or bunker or hq) and int(f.get("art", 0)) == 0 and int(f.get("jet", 0)) == 0:
+		out.append(("QG fortificato" if hq and fort == 0 and not bunker else "Difese fortificate") + ": l'[b]artiglieria[/b] (o i caccia) è la più efficace contro trincee e bunker.")
+	if df is Dictionary and int(df.get("heli", 0)) + int(df.get("jet", 0)) + int(df.get("drone", 0)) > 0 and int(f.get("aa", 0)) + int(f.get("jet", 0)) == 0:
+		out.append(warn % "Il difensore ha mezzi aerei: porta contraerea o caccia.")
+	if types == ["art"]:
+		out.append(warn % "Artiglieria da sola: serve qualcuno che avvisti e tenga il terreno.")
+	if types.size() == 1 and n >= 4 and out.is_empty():
+		out.append("Esercito di un solo tipo: un mix (fanteria + carri + artiglieria) rende di più.")
+	if types.size() >= 3:
+		out.append("[color=#7fe08f]Esercito misto: ogni tipo copre i punti deboli degli altri.[/color]")
+	elif not closed and int(f.get("tank", 0)) > 0 and fort == 0 and out.is_empty():
+		out.append("Campo aperto (%s): terreno ideale per i carri." % tname)
+	return out
 
 # ------------------------------------------------------------------ offerta di patto da un'IA
 var _pact_cd: Label = null

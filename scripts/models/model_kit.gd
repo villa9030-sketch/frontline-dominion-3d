@@ -24,6 +24,7 @@ var _s := {}                    ## chiave materiale -> [verts, normals, colors] 
 ## Soldati animati (soldier.gdshader): ogni vertice porta in UV (x, z) la posizione del soldato nel modello e in UV2
 ## (imbardata, osso + 16 * indice del soldato). Le superfici usano i materiali "<chiave>#rig". Solo con use_shaders.
 var rig := false
+var uni := ""                   ## mimetica delle uniformi (soldati): "mc" multicam, "emr" digitale, "tiger" tropicale, "wl" woodland, "od" verde oliva
 var rig_bone := 1               ## 1 busto, 2 testa, 3/4 coscia/stinco sx, 5/6 coscia/stinco dx, 7 braccia+fucile, 8 braccia+lanciarazzi
 var _rig_uv := Vector2.ZERO
 var _rig_n := 0
@@ -98,6 +99,23 @@ static func mat(key: String) -> Material:
 		var wm := _wheel_mat(key.trim_prefix("wheel_"))
 		_mats[key] = wm
 		return wm
+	if key.begins_with("uni_"):
+		if use_shaders:
+			var um := _paint_mat("paint_fine")
+			um.set_shader_parameter("camo_tex", uni_tex(key.substr(4)))
+			um.set_shader_parameter("camo_scale", 1.4)
+			um.set_shader_parameter("base_metal", 0.0)
+			_mats[key] = um
+			return um
+		var ms := StandardMaterial3D.new()
+		ms.vertex_color_use_as_albedo = true
+		ms.vertex_color_is_srgb = true
+		ms.roughness = 0.9
+		ms.albedo_texture = uni_tex(key.substr(4))
+		ms.uv1_triplanar = true
+		ms.uv1_scale = Vector3.ONE * 1.4
+		_mats[key] = ms
+		return ms
 	if key.begins_with("paint") and use_shaders:
 		var sm := _paint_mat(key)
 		_mats[key] = sm
@@ -333,6 +351,66 @@ static func pixel_tex() -> Texture2D:
 	_mats["_pixel_tex"] = tex
 	return tex
 
+## Mimetiche delle uniformi (colori veri, il colore di vertice le scurisce): "mc" multicam (AAN), "emr" digitale verde (FO),
+## "tiger" a strisce tropicali (CP), "wl" woodland a grandi macchie (UL), "od" verde oliva con trama (generico). 96×96, ripetibili.
+static func uni_tex(id: String) -> Texture2D:
+	var tk := "_uni_" + id
+	if _mats.has(tk):
+		return _mats[tk]
+	var nz := FastNoiseLite.new()
+	nz.seed = 300 + id.hash() % 97
+	nz.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	nz.frequency = 0.05
+	nz.fractal_octaves = 2
+	nz.domain_warp_enabled = id in ["mc", "wl"]
+	nz.domain_warp_amplitude = 6.0
+	var n2 := FastNoiseLite.new()
+	n2.seed = 400 + id.hash() % 89
+	n2.frequency = 0.11
+	n2.fractal_octaves = 1
+	var N := 96
+	var img := Image.create(N, N, false, Image.FORMAT_RGB8)
+	var px := 2 if id == "emr" else 1
+	for y in range(0, N, px):
+		for x in range(0, N, px):
+			var ax := TAU * float(x) / float(N)
+			var ay := TAU * float(y) / float(N)
+			var sx := 0.35 if id == "tiger" else 1.0   # strisce orizzontali: rumore allungato in x
+			var v := nz.get_noise_3d(cos(ax) * 9.0 * sx, sin(ax) * 9.0 * sx, cos(ay) * 9.0 + sin(ay) * 4.0)
+			var w := n2.get_noise_3d(cos(ax) * 14.0 * sx, sin(ax) * 14.0 * sx, cos(ay) * 14.0 + sin(ay) * 6.0)
+			var c := Color(0.4, 0.4, 0.28)
+			match id:
+				"mc":
+					c = Color(0.6, 0.53, 0.4)
+					if v > 0.12: c = Color(0.48, 0.48, 0.35)
+					if v < -0.22: c = Color(0.43, 0.34, 0.24)
+					if w > 0.42: c = Color(0.29, 0.29, 0.2)
+					elif w < -0.5: c = Color(0.7, 0.66, 0.54)
+				"emr":
+					c = Color(0.44, 0.48, 0.32)
+					if v < -0.2: c = Color(0.4, 0.33, 0.23)
+					if v > 0.2: c = Color(0.58, 0.6, 0.45)
+					if w > 0.5: c = Color(0.2, 0.21, 0.16)
+				"tiger":
+					c = Color(0.56, 0.56, 0.36)
+					if v > 0.08: c = Color(0.2, 0.3, 0.16)
+					if v > 0.36 or w > 0.48: c = Color(0.1, 0.1, 0.08)
+					elif w < -0.36: c = Color(0.46, 0.34, 0.2)
+				"wl":
+					c = Color(0.36, 0.4, 0.27)
+					if v < -0.15: c = Color(0.4, 0.31, 0.21)
+					if v > 0.32: c = Color(0.6, 0.56, 0.42)
+					if w > 0.4: c = Color(0.13, 0.12, 0.1)
+				_:
+					c = Color(0.33, 0.34, 0.24) * (0.92 + 0.14 * (v * 0.5 + 0.5))
+			# trama del tessuto
+			c = c * (0.96 + 0.08 * float((x + y) % 2))
+			img.fill_rect(Rect2i(x, y, px, px), c)
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	_mats[tk] = tex
+	return tex
+
 ## Texture di fazione: "paint_fo" grandi macchie verde scuro/marrone su sabbia, "paint_cp" grigio navale a bassissimo contrasto,
 ## "paint_rust" vernice sabbia consumata con chiazze di ruggine e di primer (UL).
 static func style_tex(key: String) -> Texture2D:
@@ -410,6 +488,8 @@ func _key(k: String) -> String:
 		return "burnt"
 	if k == "faction":
 		return "faction:" + fac.to_html(false)
+	if k == "paint" and camo >= 2.0 and uni != "":
+		return "uni_" + uni
 	if k == "paint":
 		match style:
 			0:
@@ -445,7 +525,7 @@ func _vcol(k: String, c: Color, p: Vector3) -> Color:
 	if dirt_h > 0.0 and (k == "paint" or k == "rubber" or k == "metal" or k == "track"):
 		var d := clampf(1.0 - p.y / dirt_h, 0.0, 1.0)
 		out = out.lerp(MUD, d * 0.55)
-	out.a = 1.0
+	out.a = c.a if k == "skin" else 1.0
 	return out
 
 func _arr(k: String) -> Array:
@@ -849,7 +929,15 @@ static func marks_mat(emblem: int) -> ShaderMaterial:
 ## Materiale dei soldati animati: stessi parametri della vernice/del materiale di base, con lo shader dello scheletro.
 static func _rig_mat(base: String) -> ShaderMaterial:
 	var sm: ShaderMaterial
-	if base.begins_with("paint"):
+	if base.begins_with("uni_"):
+		sm = _paint_mat("paint_fine")
+		sm.set_shader_parameter("camo_tex", uni_tex(base.substr(4)))
+		sm.set_shader_parameter("camo_scale", 1.4)
+		sm.set_shader_parameter("sharp", 5.0)
+		sm.set_shader_parameter("base_rough", 0.9)
+		sm.set_shader_parameter("tone_var", 0.09)
+		sm.set_shader_parameter("wear", 0.45)
+	elif base.begins_with("paint"):
 		sm = _paint_mat(base)
 	else:
 		sm = ShaderMaterial.new()
@@ -871,10 +959,16 @@ static func _rig_mat(base: String) -> ShaderMaterial:
 					rough = 0.96; spec = 0.2
 				"matte":
 					rough = 0.92; spec = 0.3
+				"cloth":
+					rough = 0.95; spec = 0.25
+					sm.set_shader_parameter("tone_var", 0.12)
+				"skin":
+					rough = 0.62; spec = 0.38
+					sm.set_shader_parameter("skin", true)
 		sm.set_shader_parameter("base_rough", rough)
 		sm.set_shader_parameter("base_metal", metal)
 		sm.set_shader_parameter("spec", spec)
-	sm.shader = _soldier_shader(base.begins_with("paint_pixel"))
+	sm.shader = _soldier_shader(base.begins_with("paint_pixel") or base == "uni_emr")
 	return sm
 
 static func _soldier_shader(pixel: bool) -> Shader:

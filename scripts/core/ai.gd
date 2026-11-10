@@ -12,7 +12,7 @@ const MIX := {
 	"aan": {"inf": 3.0, "tank": 2.5, "art": 1.5, "aa": 1.0, "heli": 2.5, "jet": 3.0, "drone": 2.0},
 	"fo": {"inf": 3.0, "tank": 3.5, "art": 2.5, "aa": 1.0, "heli": 1.0, "jet": 1.0, "drone": 1.0},
 	"cp": {"inf": 3.0, "tank": 2.5, "art": 1.5, "aa": 1.0, "heli": 2.5, "jet": 2.0, "drone": 3.0},
-	"ul": {"inf": 4.0, "tank": 2.0, "art": 1.5, "aa": 1.0, "heli": 1.5, "jet": 1.0, "drone": 1.0},
+	"ul": {"inf": 3.0, "tank": 2.5, "art": 2.0, "aa": 1.0, "heli": 1.5, "jet": 1.0, "drone": 1.0},
 }
 ## Ordine in cui si lasciano unità a presidio (le prime restano a casa)
 const KEEP_ORDER := ["inf", "aa", "art", "drone", "tank", "heli", "jet"]
@@ -485,7 +485,10 @@ func _do_deploy() -> bool:
 	var danger := _most_threatened()
 	var target := -1
 	var stg := _staging() if plan == null else -1
-	if danger >= 0 and threat[danger] > own_pow[danger] * 1.2 and (plan == null or danger == int(p["hq"]) or rng.randf() < 0.4):
+	var hq := int(p["hq"])
+	if hq >= 0 and threat[hq] > 0.0 and own_pow[hq] < threat[hq] * 0.9:
+		target = hq   # QG scoperto: prima di tutto lo si difende
+	elif danger >= 0 and threat[danger] > own_pow[danger] * 1.2 and (plan == null or danger == hq or rng.randf() < 0.4):
 		target = danger
 	elif plan != null:
 		target = int(plan["from"])
@@ -597,7 +600,8 @@ func _send_forces(t: int, to: int, extra: Dictionary = {}) -> Dictionary:
 	var total := _pow(have)
 	var keep_pow := minf(total * 0.35, other * 0.6)
 	if t == int(p["hq"]):
-		keep_pow = minf(total * 0.5, other * 0.9)
+		# il QG non resta sguarnito: anche i nemici a due passi possono schierare i rinforzi accanto e attaccare
+		keep_pow = minf(total * 0.6, maxf(other * 0.9, _hq_need(to)))
 	var keep := Data.empty_forces()
 	var kp := 0.0
 	keep["inf"] = 0
@@ -627,11 +631,37 @@ func _send_forces(t: int, to: int, extra: Dictionary = {}) -> Dictionary:
 	return send
 
 
+## Potenza da tenere nel QG: minaccia confinante (escluso il bersaglio `skip`) + parte di quella a due passi + presidio minimo.
+func _hq_need(skip: int = -1) -> float:
+	var g = game
+	var hq := int(p["hq"])
+	if hq < 0:
+		return 0.0
+	var adj: Array = Data.TERRITORIES[hq]["adj"]
+	var near := 0.0
+	var far := 0.0
+	var seen2 := {}
+	for j in adj:
+		var o: int = g.terr[j]["owner"]
+		if j != skip and o >= 0 and o != idx and not g.has_pact(idx, o):
+			near += enemy_pow[j]
+		for k in Data.TERRITORIES[j]["adj"]:
+			if k == hq or adj.has(k) or seen2.has(k):
+				continue
+			seen2[k] = true
+			var o2: int = g.terr[k]["owner"]
+			if o2 >= 0 and o2 != idx and not g.has_pact(idx, o2):
+				far += enemy_pow[k]
+	return near * 0.9 + far * 0.3 + 3.0
+
+
 ## Miglior attacco possibile ora: {from, to, score, forces} o null. with_pool: aggiunge il pool al territorio di partenza.
 func _choose_attack(with_pool: bool) -> Variant:
 	var g = game
 	var thr: float = (float(diff["margin"]) - 1.0) * 0.65
 	thr = maxf(0.05, thr - 0.04 * mini(idle, 6))
+	if bool(_combat.tactical):
+		thr += 0.1   # la risoluzione tattica premia il difensore più della formula di previsione: margine in più
 	var noise: float = float(diff["noise"])
 	var pool: Dictionary = p["pool"] if with_pool else {}
 	var best = null
@@ -776,6 +806,8 @@ func _do_move() -> bool:
 		if t == dest or int(g.terr[t]["regroup"]) > 0 or Data.total_units(g.terr[t]["forces"]) < 2:
 			continue
 		var spare: float = own_pow[t] - (threat[t] * 1.1 if frontier[t] == 1 else 0.0)
+		if t == int(p["hq"]):
+			spare = own_pow[t] - maxf(threat[t] * 1.1, _hq_need())
 		if spare <= surplus + 2.0:
 			continue
 		if not g.move_targets(idx, t).has(dest):
@@ -786,9 +818,11 @@ func _do_move() -> bool:
 		return false
 	var have: Dictionary = g.terr[src]["forces"]
 	var send := Data.clone_forces(have)
-	if frontier[src] == 1:
-		# lascia un presidio contro la minaccia locale
+	if frontier[src] == 1 or src == int(p["hq"]):
+		# lascia un presidio contro la minaccia locale (e nel QG anche contro quella a due passi)
 		var keep_pow := threat[src] * 1.1
+		if src == int(p["hq"]):
+			keep_pow = maxf(keep_pow, _hq_need())
 		var kp := 0.0
 		for u in KEEP_ORDER:
 			while kp < keep_pow and send[u] > 0:

@@ -390,7 +390,7 @@ Costi per livello (× L): trincee 40 denaro + 15 manodopera; mine 50 denaro + 40
   offerte valide fino al round successivo; limite di 120 round (vince chi ha più territori).
 - Carte: una a ogni conquista per attacco (non per golpe); chi elimina un giocatore ne prende le carte. Il golpe lascia almeno 1 FAN.
 - Bilanciamento FASE 6 (data.gd): Oceania bonus 3, Sud America bonus 1; UL fanteria −10% e difesa +10% in città/foreste; mercenari 300 $;
-  FO +3 FAN a ogni rinforzo e +25% denaro (mod `moneyMul`).
+  FO +2 FAN a ogni rinforzo (era +3) e +25% denaro (mod `moneyMul`); UL fanteria −20% (era −10%). Riequilibrio IA (agente UX): QG presidiato, margine d'attacco +0.1 con risoluzione tattica.
 
 ---
 # Fase 7 — rilievo dei campi di battaglia (agente terreno)

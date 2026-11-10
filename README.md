@@ -25,7 +25,17 @@ La schermata è pensata per dire sempre **cosa fare adesso** (piano e schizzo: `
   (chiuso di default, uno alla volta); i badge segnalano carte in mano (lampeggia se c'è un tris), notizie non lette, turni rimasti.
 - **Pannello del territorio** (a destra, al clic): riassunto (proprietario, terreno, forze); sui tuoi territori nel rifornimento
   «Schiera qui» e le schede **Recluta / Edifici / Fortifica**.
+- **Recluta** mostra per ogni unità costo, turni e a cosa serve («Carri: sfondano in campo aperto…»); se non è disponibile, il motivo
+  esatto («🔒 Serve una Fabbrica in questo territorio», «🔒 Serve Tech 2 — ricerca dal pulsante in alto», «Risorse insufficienti: mancano 20 acciaio»).
+  **Edifici** dice in una riga cosa abilita ogni edificio. La **ricerca** (pulsante in alto) vale per tutti i territori; gli edifici solo dove
+  li costruisci; le unità reclutate nascono nel territorio scelto.
+- All'inizio del tuo turno il riquadro ORDINI riassume il turno: «Questo turno: +172 $ … · 6 rinforzi (fanteria) · Fabbrica completata a …».
+- Il pannello d'attacco aggiunge consigli sulla composizione (es. «Solo fanteria contro un nemico in città: rischioso»).
 - Notifiche brevi (al massimo due), banner d'inizio turno breve; tooltip in italiano su icone e valori.
+
+**Come formare l'esercito**: i rinforzi gratuiti sono fanteria (difesa); per attaccare recluta carri e artiglieria nel QG o dove hai
+una Fabbrica (aerei con l'Aeroporto); un esercito misto batte uno numeroso di un solo tipo; lo spostamento non ha limiti di distanza
+tra territori tuoi collegati (uno per turno). Il tutorial ha un passo dedicato e la guida F1 una sezione.
 
 1. **Rifornimento**: entrate e rinforzi del turno. Lo **schieramento è già attivo**: un clic su un tuo territorio (verde)
    mette lì tutti i rinforzi (Esc o «Annulla schieramento» per guardare prima il tabellone; «Schiera» per riprendere).

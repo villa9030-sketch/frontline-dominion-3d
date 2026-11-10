@@ -45,6 +45,7 @@ var fstat := {}          # sigla -> {elim, elim_round, terr20}
 var ai_turn_max := 0.0   # ms del turno IA più lento
 var ai_ms_tot := 0.0
 var ai_turns_tot := 0
+var aiq := {"attacks": 0, "wins": 0, "research": 0, "forts": 0, "builds": 0, "recruits": 0, "moves": 0, "turns": 0, "hq_thin": 0, "hq_lost": 0, "idle_turns": 0}
 
 
 func _initialize() -> void:
@@ -162,6 +163,9 @@ func _summary() -> void:
 	for sh in ["AAN", "FO", "CP", "UL"]:
 		parts.append("%s %d%%" % [sh, roundi(100.0 * wins.get(sh, 0) / maxi(1, games))])
 	print("sim: quota vittorie ", " | ".join(parts))
+	print("sim: qualità IA: attacchi %d (vinti %d%%), turni %d (attacchi/turno %.2f), ricerche %d, fortificazioni %d, edifici %d, reclute %d, spostamenti %d, QG sguarnito a fine turno %d, QG persi %d" % [
+		aiq["attacks"], roundi(100.0 * aiq["wins"] / maxf(1.0, aiq["attacks"])), aiq["turns"], aiq["attacks"] / maxf(1.0, aiq["turns"]),
+		aiq["research"], aiq["forts"], aiq["builds"], aiq["recruits"], aiq["moves"], aiq["hq_thin"], aiq["hq_lost"]])
 
 
 func _play(GameScript: Script, opts: Dictionary, label: String, max_min: float, watch: int) -> void:
@@ -172,6 +176,20 @@ func _play(GameScript: Script, opts: Dictionary, label: String, max_min: float, 
 	var elim := {}
 	var on_event := func(n: String, data: Dictionary) -> void:
 		sig[n] = sig.get(n, 0) + 1
+		if n == "hqLost":
+			aiq["hq_lost"] += 1
+		if n == "turn_end" and watch < 0:
+			var pi := int(data.get("player", -1))
+			if pi >= 0 and g.players[pi]["alive"] and int(g.players[pi]["hq"]) >= 0:
+				var D = root.get_node("Data")
+				var hq: int = g.players[pi]["hq"]
+				var thr := 0
+				for j in D.TERRITORIES[hq]["adj"]:
+					var o: int = g.terr[j]["owner"]
+					if o >= 0 and o != pi and not g.has_pact(pi, o):
+						thr += D.total_units(g.terr[j]["forces"])
+				if thr > 0 and D.total_units(g.terr[hq]["forces"]) * 2 < thr:
+					aiq["hq_thin"] += 1
 		if n == "eliminated":
 			elim[int(data.get("player", -1))] = g.round
 			if verbose:
@@ -211,6 +229,8 @@ func _play(GameScript: Script, opts: Dictionary, label: String, max_min: float, 
 			ai_ms += float(a.stats["ms"])
 			ai_max = maxf(ai_max, float(a.stats["maxMs"]))
 			ai_err += int(a.stats["errors"])
+			for k in ["attacks", "wins", "research", "forts", "builds", "recruits", "moves", "turns"]:
+				aiq[k] += int(a.stats.get(k, 0))
 			ai_ms_tot += float(a.stats["ms"])
 			ai_turns_tot += int(a.stats.get("turns", 0))
 	ai_turn_max = maxf(ai_turn_max, ai_max)

@@ -1157,7 +1157,7 @@ func guide_state() -> Dictionary:
 			var nxt := {"text": "Fase successiva: Attacco  ›", "act": "end-phase", "tip": "Passa alla fase 2 · Attacco"}
 			if pool > 0 and mode != null and mode["type"] == "deploy":
 				st["text"] = "Hai [b][color=#ffd57a]%d rinforzi[/color][/b]: clicca un tuo territorio [color=#7fe08f]evidenziato in verde[/color] per schierarli." % pool
-				st["sub"] = "Mettili dove confini con i nemici o dove vuoi attaccare. Esc = prima guarda il tabellone."
+				st["sub"] = "Sono fanteria: mettili dove confini con i nemici o da dove vuoi attaccare. Esc = prima guarda il tabellone."
 				nxt["kind"] = "normal"
 				st["main"] = nxt
 				st["alt"] = {"text": "Annulla schieramento", "act": "cancel-mode", "tip": "Esci dallo schieramento per esplorare il tabellone (Esc)"}
@@ -1168,7 +1168,7 @@ func guide_state() -> Dictionary:
 				st["alt"] = {"text": "Fase successiva: Attacco  ›", "act": "end-phase", "tip": "I rinforzi non schierati restano per il prossimo turno"}
 			else:
 				st["text"] = "Puoi [b]reclutare[/b], [b]costruire[/b] o [b]fortificare[/b]: clicca un tuo territorio e usa le schede del pannello a destra."
-				st["sub"] = "Quando hai finito passa all'attacco. Mercato e carte sono nella barra a sinistra."
+				st["sub"] = "Per attaccare servono carri e artiglieria: si reclutano nel QG o dove hai una Fabbrica. Poi passa all'attacco."
 				st["main"] = nxt
 				st["alt"] = end_alt
 			if Time.get_ticks_msec() / 1000.0 - _pool_warn_t < 6.0 and pool > 0:
@@ -1364,6 +1364,7 @@ func _on_turn_start(p: int) -> void:
 		_pool_warn_t = -100.0
 		_tension_until = 0.0   # torna la musica del tabellone all'inizio del turno del giocatore
 		hud.turn_banner(p, true)
+		_turn_report()
 		Sfx.play("research")
 		if is_inside_tree():
 			get_tree().create_timer(2.4).timeout.connect(_flush_news)
@@ -1374,6 +1375,57 @@ func _on_turn_start(p: int) -> void:
 		if sel >= 0 and not sel_own():
 			pass
 	refresh(true)
+
+## Riepilogo d'inizio turno del giocatore: entrate, rinforzi, edifici e unità completati, ricerca, territori persi.
+var _rep := {}
+
+func _rep_add(k: String, text: String) -> void:
+	if not _rep.has(k):
+		_rep[k] = []
+	(_rep[k] as Array).append(text)
+
+func turn_report_text() -> String:
+	if game == null or h() < 0:
+		return ""
+	var P: Dictionary = game.players[h()]
+	var parts := []
+	var inc := []
+	var rates: Dictionary = P.get("rates", {})
+	for k in ["money", "oil", "steel", "manpower"]:
+		var v := int(round(float(rates.get(k, 0.0))))
+		if v != 0 and (k == "money" or absf(float(rates.get(k, 0.0))) >= 1.0):
+			inc.append("%s%d %s" % ["+" if v > 0 else "", v, Data.RES_ICONS.get(k, k)])
+	if inc.size():
+		parts.append(" ".join(inc))
+	var pool := Data.total_units(P["pool"])
+	if pool > 0:
+		parts.append("%d rinforzi (fanteria) da schierare" % pool)
+	for b in _rep.get("built", []):
+		parts.append(String(b))
+	var units: Dictionary = _rep.get("units", {})
+	for tn in units:
+		var u: Dictionary = units[tn]
+		var lst := []
+		for k in Data.UNIT_KEYS:
+			if int(u.get(k, 0)) > 0:
+				lst.append("%d %s" % [int(u[k]), Data.UNITS[k]["short"]])
+		parts.append("pronte a %s: %s" % [tn, ", ".join(lst)])
+	for r in _rep.get("research", []):
+		parts.append(String(r))
+	var lost: Array = _rep.get("lost", [])
+	if lost.size():
+		parts.append("perduto: " + ", ".join(lost))
+	if parts.is_empty():
+		return ""
+	return "Questo turno: " + " · ".join(parts)
+
+func _turn_report() -> void:
+	var tx := turn_report_text()
+	_rep = {}
+	if tx == "" or round_n() <= 1:
+		return
+	if hud != null and hud.has_method("feedback"):
+		hud.feedback(tx, "info", 16.0)
 
 ## Notizie sulle altre potenze: in tempo reale subito come toast; a turni raccolte durante i turni IA e riassunte
 ## in pochi toast all'inizio del turno del giocatore (il dettaglio resta nel registro).
@@ -1877,6 +1929,8 @@ func _on_signal(name: String, d: Dictionary) -> void:
 					toast("Conquistato: " + _tn(d.get("terr")), "good")   # a turni l'esito è nel riquadro ORDINI
 			elif hh >= 0 and int(d.get("prev", -2)) == hh:
 				Sfx.play("alert"); toast("Perduto: " + _tn(d.get("terr")), "bad")
+				if turn_mode():
+					_rep_add("lost", _tn(d.get("terr")))
 			elif hh < 0:
 				Sfx.play("capture")
 			if sel == int(d.get("terr", -1)):
@@ -1888,11 +1942,26 @@ func _on_signal(name: String, d: Dictionary) -> void:
 			if int(d.get("player", -2)) == hh:
 				Sfx.play("build")
 				var bk = d.get("key", "")
-				toast((Data.BUILDINGS[bk]["name"] if Data.BUILDINGS.has(bk) else "Edificio") + " completato in " + _tn(d.get("terr")), "good")
+				var btxt: String = (Data.BUILDINGS[bk]["name"] if Data.BUILDINGS.has(bk) else "Edificio") + " completat" + ("o" if String(bk) in ["aeroporto", "porto", "impianto"] else "a") + " a " + _tn(d.get("terr"))
+				if turn_mode():
+					_rep_add("built", btxt)   # nel riepilogo d'inizio turno
+				else:
+					toast(btxt, "good")
+		"recruited":
+			if int(d.get("player", -2)) == hh and turn_mode():
+				var tn := _tn(d.get("terr"))
+				if not _rep.has("units"):
+					_rep["units"] = {}
+				if not _rep["units"].has(tn):
+					_rep["units"][tn] = {}
+				var uk := String(d.get("unit", "inf"))
+				_rep["units"][tn][uk] = int(_rep["units"][tn].get(uk, 0)) + 1
 		"researched":
 			var lv := int(d.get("level", 1))
 			if int(d.get("player", -2)) == hh:
-				Sfx.play("research"); toast("Ricerca completata: " + UIKit.tech_name(lv), "good")
+				Sfx.play("research"); toast("Ricerca completata: " + UIKit.tech_name(lv) + " (vale in tutti i tuoi territori)", "good")
+				if turn_mode():
+					_rep_add("research", "ricerca completata: " + UIKit.tech_name(lv))
 			elif hh >= 0:
 				_news("tech", "%s raggiunge Tech %d" % [game.players[int(d["player"])]["fac"]["short"], lv], {"who": String(game.players[int(d["player"])]["fac"]["short"]), "lv": lv})
 		"card":

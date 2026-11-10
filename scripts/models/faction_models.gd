@@ -1139,40 +1139,12 @@ static func _bunker_ul(root: Node3D, c: Color, lod: int, burnt: bool, tint: floa
 	_meta(root, 9.5, 2.6)
 
 # ============================================================== FANTERIA
-## Squadre per fazione: AAN visori notturni e mimetica a pixel, FO elmetti e mimetica verde/sabbia, CP elmetti e cappelli
-## a tesa larga in grigio-blu, UL abiti eterogenei (giacche civili, jeans, kefiah, berretti, qualche elmetto).
+## Squadre per fazione (UnitModels.soldier_kit): AAN multicam, portapiastre coyote, elmetti FAST con visori; FO digitale verde,
+## elmetti 6B47 con occhiali, passamontagna, AK e RPG; CP tropicale a strisce, tasche pettorali, elmetti e cappelli a tesa larga;
+## UL miliziani con abiti misti civili/militari (jeans, felpe, kefiah, berretti, bandane), AK col legno.
 static func _inf(root: Node3D, c: Color, lod: int, burnt: bool, tint: float, fac: int) -> void:
-	var pc := UnitModels._paint(UnitModels.UNIFORM, c, tint)
-	var squad := [
-		["aim", Vector3(0.0, 0, -1.4), 0.0],
-		["kneel", Vector3(-1.7, 0, -0.2), 0.25],
-		["walk", Vector3(1.6, 0, 0.1), -0.15],
-		["rpg", Vector3(-0.8, 0, 1.6), 0.1],
-		["prone", Vector3(1.0, 0, 1.9), -0.05]]
 	root.add_child(_mi("Body", _m("inf_body_f", c, lod, burnt, tint, func(b: ModelKit) -> void:
-		b.rig = ModelKit.use_shaders and not burnt
-		for i in squad.size():
-			var s: Array = squad[i]
-			var old := b.t
-			b.t = b.t * Transform3D(Basis(Vector3.UP, float(s[2])), s[1] as Vector3)
-			var role: String = UnitModels.SQUAD_ROLES[i]
-			var hc0 := Color(0.3, 0.28, 0.22)
-			match fac:
-				0:
-					UnitModels._soldier(b, String(s[0]), pc, lod, "helmet_nvg", Color(0, 0, 0, 0), "paint", hc0, role)
-				2:
-					UnitModels._soldier(b, String(s[0]), pc, lod, "boonie" if i % 2 == 1 else "helmet", Color(0, 0, 0, 0), "paint", hc0, role)
-				3:
-					var outfit: Array = [
-						[pc, Color(0.2, 0.24, 0.32), "paint", "shemagh", Color(0.62, 0.58, 0.5)],
-						[Color(0.17, 0.17, 0.17), Color(0.45, 0.4, 0.3), "matte", "cap", Color(0.3, 0.34, 0.26)],
-						[Color(0.42, 0.36, 0.26), Color(0.3, 0.32, 0.24), "matte", "beanie", Color(0.15, 0.15, 0.15)],
-						[pc * 1.1, pc * 0.9, "paint", "helmet", pc],
-						[Color(0.36, 0.38, 0.3), Color(0.24, 0.27, 0.34), "matte", "shemagh", Color(0.5, 0.2, 0.18)]][i]
-					UnitModels._soldier(b, String(s[0]), outfit[0], lod, outfit[3], outfit[1], outfit[2], outfit[4], role)
-				_:
-					UnitModels._soldier(b, String(s[0]), pc, lod, "helmet", Color(0, 0, 0, 0), "paint", hc0, role)
-			b.t = old
+		UnitModels.squad_into(b, fac, lod, burnt)
 		)))
 	root.add_child(_mk("Muzzle", Vector3(0.05, 1.45, -2.4)))
 	root.set_meta("length", 4.5)

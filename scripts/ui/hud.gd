@@ -49,6 +49,7 @@ var _g_key := ""
 var _fb_text := ""
 var _fb_kind := "good"
 var _fb_t := -100.0
+var _fb_secs := 8.0
 const CARD_ICON := {"inf": "inf", "tank": "tank", "air": "jet", "jolly": "star"}
 const CARD_COL := {"inf": Color("#cfe0c8"), "tank": Color("#ff9a7a"), "air": Color("#8ac8ff"), "jolly": Color("#ffd84a")}
 
@@ -493,9 +494,10 @@ func _guide_act(which: String) -> void:
 		main.act(String(a.get("act", "")), a.get("ds", {}))
 
 ## Esito dell'ultima azione nel riquadro ORDINI (riga «✓ …» per qualche secondo).
-func feedback(text: String, kind: String = "good") -> void:
+func feedback(text: String, kind: String = "good", secs: float = 8.0) -> void:
 	_fb_text = text
 	_fb_kind = kind
+	_fb_secs = secs
 	_fb_t = Time.get_ticks_msec() / 1000.0
 	_g_key = ""
 	if game != null:
@@ -508,7 +510,7 @@ func _refresh_guide() -> void:
 		return
 	var st: Dictionary = main.guide_state()
 	var now := Time.get_ticks_msec() / 1000.0
-	var fb := _fb_text if now - _fb_t < 8.0 else ""
+	var fb := _fb_text if now - _fb_t < _fb_secs else ""
 	var key := str(st) + "|" + fb
 	if key != _g_key:
 		_g_key = key
@@ -961,7 +963,8 @@ func _refresh_tech(P) -> void:
 		tv.add_child(UIKit.label("TECH %d" % lv, 14, UIKit.AMBER2, "mono", 700))
 		tv.add_child(UIKit.label(Data.TECH_LEVELS[lv]["name"], 11, UIKit.DIM, "sans", 600))
 		tl.add_child(tv)
-		tl.tooltip_text = Data.TECH_LEVELS[lv]["desc"]
+		tl.tooltip_text = "Livello attuale %s: %s.
+La tecnologia vale per tutti i tuoi territori." % [UIKit.tech_name(lv), Data.TECH_LEVELS[lv]["desc"]]
 		tl.mouse_filter = Control.MOUSE_FILTER_PASS
 		c.add_child(tl)
 		var rs = P["research"]
@@ -978,7 +981,7 @@ func _refresh_tech(P) -> void:
 			bl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			bl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 			bar.add_child(bl)
-			bar.tooltip_text = "Ricerca in corso: " + Data.TECH_LEVELS[int(rs["level"])]["desc"]
+			bar.tooltip_text = "Ricerca in corso — " + tech_tip(int(rs["level"]), hh)
 			c.add_child(bar)
 		elif lv < 4:
 			var rc = main.gcall("research_cost", [hh])
@@ -992,7 +995,8 @@ func _refresh_tech(P) -> void:
 				ok = false
 				why = main.supply_block()
 			var rturns := int(rc.get("turns", Data.TURNS["tech"][mini(lv + 1, 4)] if "TURNS" in Data else 1))
-			var b := UIKit.button("", "normal", "sm", main_act.bind("research", {}), "%s: %s — %s%s" % [UIKit.tech_name(lv + 1), L["desc"], _dur(rturns, float(rc.get("time", 0))), (" — " + why) if why != "" else ""])
+			var b := UIKit.button("", "normal", "sm", main_act.bind("research", {}), "%s — pronta in %s%s" % [tech_tip(lv + 1, hh), _dur(rturns, float(rc.get("time", 0))), ("
+" + why) if why != "" else ""])
 			var bh := UIKit.vbox(-2)
 			bh.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 			bh.offset_left = 8
@@ -1007,6 +1011,27 @@ func _refresh_tech(P) -> void:
 		else:
 			c.add_child(UIKit.label("Tecnologia massima", 12, UIKit.DIM))
 	)
+
+## Testo d'aiuto di un livello tecnologico: cosa sblocca, bonus d'attacco e che vale ovunque.
+func tech_tip(lv: int, hh: int) -> String:
+	if lv < 1 or lv >= Data.TECH_LEVELS.size():
+		return ""
+	var units := []
+	for k in Data.UNIT_KEYS:
+		var need := int(Data.UNITS[k]["tech"])
+		if k == "drone" and hh >= 0 and game.players[hh]["fac"]["mods"].has("droneTech"):
+			need = int(game.players[hh]["fac"]["mods"]["droneTech"])
+		if need == lv:
+			units.append(String(Data.UNITS[k]["name"]).to_lower())
+	var t := "%s sblocca: %s" % [UIKit.tech_name(lv), UIKit.terms(String(Data.TECH_LEVELS[lv]["desc"]))]
+	if units.size():
+		t += "
+Nuove unità da reclutare: " + ", ".join(units)
+	t += "
+Attacco di tutte le tue unità +%d%% (rispetto a Tech 1)" % int(round(Data.TECH_COMBAT_BONUS * 100 * (lv - 1)))
+	t += "
+Vale per tutti i tuoi territori: basta ricercarla una volta."
+	return t
 
 # ------------------------------------------------------------------ pannello sinistro
 func _refresh_left() -> void:
@@ -1561,26 +1586,29 @@ func _refresh_right() -> void:
 	_sec(rp["bbtns"], bbk, func(c: Control):
 		if bbk == "":
 			return
-		var g := GridContainer.new()
-		g.columns = 3
-		g.add_theme_constant_override("h_separation", 4)
-		g.add_theme_constant_override("v_separation", 4)
-		g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var bl := UIKit.vbox(4)
+		bl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		var n := 0
+		var hint := UIKit.label("Gli edifici valgono solo in questo territorio. Pronti in 1–3 turni.", 13, Color("#d2dcd3"))
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		bl.add_child(hint)
 		for k in Data.BUILDING_KEYS:
 			if st["buildings"].has(k) or (bld != null and bld["key"] == k):
 				continue
 			if Data.BUILDINGS[k].get("coastal", false) and not T["coastal"]:
 				continue
+			if is_hq and (k == "caserma" or k == "fabbrica"):
+				continue   # il QG vale già come caserma e fabbrica
 			var cb = main.gcall("can_build", [hh, t, k], {"ok": false, "reason": ""})
 			var B: Dictionary = Data.BUILDINGS[k]
 			var bok: bool = cb["ok"] and main.can_supply()
 			var why: String = String(cb.get("reason", "")) if not cb["ok"] else main.supply_block()
-			var tipt: String = "%s: %s — %s%s" % [B["name"], B["desc"], _dur(_bld_turns(k), float(B["time"])), "" if bok else " — " + why]
-			g.add_child(_rich_button(k, B["name"], B["cost"], bok, tipt, main_act.bind("build", {"k": k}), Vector2(108, 44)))
+			var role := String(Data.BUILDING_ROLE.get(k, B["desc"])) if "BUILDING_ROLE" in Data else String(B["desc"])
+			var tipt: String = "%s: %s — %s%s" % [B["name"], role, _dur(_bld_turns(k), float(B["time"])), "" if bok else " — " + why]
+			bl.add_child(_build_row(k, B, role, bok, why, tipt))
 			n += 1
 		if n:
-			c.add_child(g)
+			c.add_child(bl)
 	)
 	# reclutamento
 	var rk := ""
@@ -1596,11 +1624,16 @@ func _refresh_right() -> void:
 	_sec(rp["recruit"], rk, func(c: Control):
 		if rk == "":
 			return
-		c.add_child(UIKit.header("Reclutamento", "nascono qui" if main.can_supply() else main.supply_block().to_lower()))
-		var info := UIKit.rich("[color=#8ad6ff]ℹ[/color] La [b]tecnologia[/b] vale in tutti i tuoi territori. Gli [b]edifici[/b] valgono solo qui. Le unità [b]nascono in questo territorio[/b].", 12, UIKit.DIM)
+		c.add_child(UIKit.header("Reclutamento", "" if main.can_supply() else main.supply_block().to_lower()))
+		var info := UIKit.rich("La [b]tecnologia[/b] vale in tutti i tuoi territori. Gli [b]edifici[/b] valgono solo qui. Le unità [b]nascono in questo territorio[/b].", 13, Color("#d2dcd3"))
 		info.tooltip_text = "I rinforzi gratuiti di ogni turno sono fanteria (ottima per difendere). Per attaccare servono carri e artiglieria: si reclutano dove hai una Fabbrica (il QG vale come caserma e fabbrica). Un esercito misto batte un esercito numeroso di un solo tipo."
 		info.mouse_filter = Control.MOUSE_FILTER_PASS
-		c.add_child(info)
+		var ip := PanelContainer.new()
+		ip.add_theme_stylebox_override("panel", UIKit.box(Color(0.35, 0.6, 0.8, 0.08), Color(0.55, 0.8, 1.0, 0.35), 1, 3, Vector4(8, 4, 8, 5)))
+		ip.mouse_filter = Control.MOUSE_FILTER_PASS
+		ip.tooltip_text = info.tooltip_text
+		ip.add_child(info)
+		c.add_child(ip)
 		for k in Data.UNIT_KEYS:
 			c.add_child(_recruit_row(hh, t, k))
 		var P: Dictionary = game.players[hh]
@@ -1955,6 +1988,38 @@ func _rich_button(ic: String, title: String, cost, ok: bool, tipt: String, cb: C
 	b.add_child(m)
 	return b
 
+## Riga di un edificio nella scheda Edifici: nome, costo, turni, a cosa serve e perché non si può costruire.
+func _build_row(k: String, B: Dictionary, role: String, ok: bool, why: String, tipt: String) -> Control:
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", UIKit.box(Color(0, 0, 0, 0.22), UIKit.LINE if ok else Color(UIKit.LINE, 0.4), 1, 3, Vector4(8, 4, 6, 5)))
+	p.mouse_filter = Control.MOUSE_FILTER_PASS
+	p.tooltip_text = tipt
+	var v := UIKit.vbox(1)
+	v.mouse_filter = Control.MOUSE_FILTER_PASS
+	var h := UIKit.hbox(5)
+	h.mouse_filter = Control.MOUSE_FILTER_PASS
+	h.add_child(UIKit.icon(k, 16, Color(0, 0, 0, 0) if ok else Color(0.5, 0.5, 0.45)))
+	h.add_child(UIKit.label(B["name"], 13, UIKit.WHITE if ok else UIKit.TEXT, "sans", 600))
+	h.add_child(UIKit.spacer())
+	var res = game.players[main.h()]["res"] if main.h() >= 0 else null
+	h.add_child(UIKit.cost_row(B["cost"], 1.0, 11, res))
+	var b := UIKit.button("Costruisci", "normal", "xs", main_act.bind("build", {"k": k}), tipt)
+	b.custom_minimum_size = Vector2(78, 22)
+	b.disabled = not ok
+	h.add_child(b)
+	v.add_child(h)
+	var rl := UIKit.label("%s · %s" % [role, _dur(_bld_turns(k), float(B["time"]))], 13, Color("#d2dcd3"))
+	rl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	rl.custom_minimum_size.x = RIGHT_W - 50
+	v.add_child(rl)
+	if not ok and why != "":
+		var wl := UIKit.label(why, 13, Color("#ffb4a0"), "sans", 600)
+		wl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		wl.custom_minimum_size.x = RIGHT_W - 50
+		v.add_child(wl)
+	p.add_child(v)
+	return p
+
 func _recruit_row(hh: int, t: int, k: String) -> Control:
 	var U: Dictionary = Data.UNITS[k]
 	var cr = main.gcall("can_recruit", [hh, t, k], {"ok": false, "reason": ""})
@@ -1999,24 +2064,20 @@ Pronta in %s · si recluta con: %s%s" % [U["name"], role, _dur(nt, float(U["time
 		b.disabled = not cr["ok"]
 		row.add_child(b)
 	box.add_child(row)
-	var rl := UIKit.label("%s · %s" % [role, ("pronta in %d turn%s" % [nt, "o" if nt == 1 else "i"]) if nt > 0 else ""], 11, Color(UIKit.DIM, 0.95) if not lock else Color(UIKit.DIM, 0.7))
-	rl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	rl.custom_minimum_size.x = RIGHT_W - 60
-	rl.mouse_filter = Control.MOUSE_FILTER_PASS
+	# riga 2: il ruolo se si può reclutare, altrimenti il motivo esatto (il ruolo resta nel tooltip)
+	var l2: Label
+	if cr["ok"] or why == "":
+		l2 = UIKit.label(role + " · pronta in %d turn%s" % [nt, "o" if nt == 1 else "i"], 13, Color("#d2dcd3"))
+	else:
+		l2 = UIKit.label(("🔒 " if lock else "") + why, 13, Color("#ffd28a") if lock else Color("#ffb4a0"), "sans", 600)
+	l2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l2.custom_minimum_size.x = RIGHT_W - 60
+	l2.mouse_filter = Control.MOUSE_FILTER_PASS
 	var rm := MarginContainer.new()
 	rm.add_theme_constant_override("margin_left", 23)
 	rm.mouse_filter = Control.MOUSE_FILTER_PASS
-	rm.add_child(rl)
+	rm.add_child(l2)
 	box.add_child(rm)
-	if not cr["ok"] and why != "":
-		var wl := UIKit.label(("🔒 " if lock else "") + why, 11, Color("#e8a090") if not lock else Color("#d8c690"), "sans", 600)
-		wl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		wl.custom_minimum_size.x = RIGHT_W - 60
-		var wm := MarginContainer.new()
-		wm.add_theme_constant_override("margin_left", 23)
-		wm.mouse_filter = Control.MOUSE_FILTER_PASS
-		wm.add_child(wl)
-		box.add_child(wm)
 	if lock:
 		row.modulate.a = 0.6
 	box.add_child(UIKit.spacer(0, 3, false))
