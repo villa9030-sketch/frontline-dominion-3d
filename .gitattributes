@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.png binary
+*.wav binary
+*.tar binary
+*.bat text eol=crlf

@@ -1,0 +1,32 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+config/name="Frontline Dominion"
+config/description="RTS moderno di conquista mondiale: tabellone 3D + battaglie 3D"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+config/icon="res://icon.png"
+boot_splash/bg_color=Color(0.02, 0.035, 0.035, 1)
+boot_splash/show_image=false
+config/use_custom_user_dir=true
+config/custom_user_dir_name="FrontlineDominion"
+
+[autoload]
+Data="*res://scripts/core/data.gd"
+Shot="*res://scripts/core/shot.gd"
+Sfx="*res://scripts/core/sfx.gd"
+Settings="*res://scripts/core/settings.gd"
+Music="*res://scripts/core/music.gd"
+
+[display]
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+anti_aliasing/quality/msaa_3d=2
+environment/defaults/default_clear_color=Color(0.04, 0.06, 0.08, 1)

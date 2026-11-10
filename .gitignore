@@ -1,0 +1,12 @@
+# Godot
+.godot/
+*.translation
+# build/export
+build/
+# semaforo di tools/godot_run.js
+.godot_lock/
+# audio renderizzato per l'analisi (rigenerabile)
+docs/audio_review/wav/
+# varie
+*.tmp
+*.log

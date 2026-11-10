@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><title>Frontline Dominion 3D — galleria</title>
+<style>
+  body { margin: 0; background: #0b1014; color: #dfe6e2; font-family: Segoe UI, Arial, sans-serif; }
+  header { padding: 28px 40px 10px; }
+  h1 { margin: 0; font: 700 30px Consolas, monospace; letter-spacing: 3px; } h1 span { color: #f2b13c; }
+  .sub { color: #8fa39a; margin-top: 6px; }
+  h2 { font: 700 18px Consolas, monospace; color: #f2b13c; letter-spacing: 1px; margin: 30px 40px 10px; border-bottom: 1px solid #2c3b42; padding-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 18px; padding: 0 40px; }
+  figure { margin: 0; background: #141c22; border: 1px solid #2c3b42; border-radius: 8px; overflow: hidden; }
+  figure img { width: 100%; display: block; cursor: zoom-in; }
+  figcaption { padding: 9px 12px; font-size: 13.5px; color: #c8d3ce; }
+  figcaption b { color: #fff; }
+  #lb { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: none; align-items: center; justify-content: center; cursor: zoom-out; }
+  #lb img { max-width: 96vw; max-height: 94vh; }
+  footer { color: #6f817a; font-size: 12px; padding: 30px 40px; }
+</style></head><body>
+<header>
+  <h1>FRONTLINE <span>DOMINION</span> 3D</h1>
+  <div class="sub">Galleria del lavoro del 9 novembre — Godot 4.6, modelli, effetti, musica e suoni generati in codice. Clic su un'immagine per ingrandirla.</div>
+</header>
+
+<h2>MENU E SCENARI</h2>
+<div class="grid" id="g-menu"></div>
+<h2>TABELLONE STRATEGICO 3D</h2>
+<div class="grid" id="g-map"></div>
+<h2>BATTAGLIA TATTICA 3D</h2>
+<div class="grid" id="g-battle"></div>
+<h2>INTERFACCIA DI GIOCO</h2>
+<div class="grid" id="g-ui"></div>
+<h2>MEZZI E MODELLI (generati in codice)</h2>
+<div class="grid" id="g-models"></div>
+<h2>TAVOLE DI PROGETTO</h2>
+<div class="grid" id="g-plan"></div>
+<footer>Tutte le immagini sono catturate automaticamente dal gioco a 960×540 (cartella docs/screens).</footer>
+<div id="lb" onclick="this.style.display='none'"><img id="lbimg"></div>
+<script>
+const G = {
+  'g-menu': [
+    ['ui4_menu.png', '<b>Schermata iniziale</b>: tabellone 3D sullo sfondo, anteprime 3D dei mezzi delle quattro potenze, continua/carica/scenari.'],
+    ['ui4_scenari.png', '<b>Scenari</b>: cinque operazioni con mappa della situazione iniziale, obiettivo, fazione consigliata e durata.'],
+    ['ui4_briefing.png', '<b>Briefing</b> dello scenario prima del via.'],
+    ['ui4_fazione.png', '<b>Nuova campagna</b>: scelta della fazione con anteprima 3D del mezzo, avversari, difficoltà, nebbia.'],
+  ],
+  'g-map': [
+    ['map4_terminatore.png', '<b>Vista d’insieme</b> con ciclo giorno/notte: terminatore, luci delle città, continenti controllati, bandiere degli obiettivi.'],
+    ['map2_vicino.png', '<b>Zoom sul rilievo</b>: Alpi innevate, campi, boschi, miniature dei presidi, fronte luminoso.'],
+    ['map4_notte_vicino.png', '<b>Notte</b>: luci delle città e coste leggibili.'],
+    ['map3_nebbia.png', '<b>Nebbia di guerra</b>: territori velati con forze stimate.'],
+    ['map3_navi.png', '<b>Traversate navali</b>: colonne di navi con scia.'],
+    ['map2_attacco.png', '<b>Attacco in arrivo</b> verso un tuo territorio: freccia rossa e conto alla rovescia.'],
+    ['map3_patto.png', '<b>Patto di non aggressione</b>: confine tratteggiato e icona sul partner.'],
+    ['map3_veterani.png', '<b>Veterani</b>: stelle sui presidi esperti.'],
+  ],
+  'g-battle': [
+    ['battle4_fazioni_fo_ul.png', '<b>Federazione Orientale contro Unione Libera</b>: carri pesanti contro tecniche e mezzi improvvisati.'],
+    ['battle4_supporto_aereo.png', '<b>Supporto aereo</b>: passaggio del caccia e bombardamento; barra delle abilità in basso.'],
+    ['battle3_intro.png', '<b>Introduzione cinematica</b>: territorio, ora, meteo, schieramenti e veterani.'],
+    ['battle3_costa.png', '<b>Sbarco</b>: mezzi da sbarco sulla riva, navi al largo, minimappa.'],
+    ['battle2_ravvicinato.png', '<b>Scontro ravvicinato</b> nel deserto: formazioni, fumo, colpi.'],
+    ['battle2_urbano.png', '<b>Battaglia urbana</b> fra gli isolati.'],
+    ['battle2_montagna_tramonto.png', '<b>Montagna al tramonto</b>, con bunker e artiglieria.'],
+    ['battle4_fumo.png', '<b>Cortina fumogena</b> sulle unità selezionate.'],
+    ['battle4_foresta_coperto.png', '<b>Foresta con cielo coperto</b>: unità leggibili anche fra gli alberi.'],
+    ['battle2_schieramento.png', '<b>Fase di schieramento</b> prima del via.'],
+    ['battle2_artico.png', '<b>Artico</b> con neve leggera.'],
+    ['battle3_60v60.png', '<b>Grande battaglia</b> 60 contro 60.'],
+  ],
+  'g-ui': [
+    ['ui2_partita.png', '<b>Partita</b>: risorse, potenze in campo, mercato, pannello del territorio, carte, rinforzi, registro.'],
+    ['qa_battaglia_prompt.png', '<b>Battaglia in arrivo</b>: previsione e scelta fra risoluzione automatica e comando diretto.'],
+    ['ui3_offer.png', '<b>Diplomazia</b>: un’IA propone un patto.'],
+    ['ui3_fog.png', '<b>Territorio nella nebbia</b>: forze stimate.'],
+    ['ui2_fine.png', '<b>Fine partita</b> con grafici di territori, potenza, unità e reddito.'],
+    ['ui4_impostazioni.png', '<b>Impostazioni</b>: qualità grafica, giorno/notte, volumi, telecamera.'],
+    ['ui2_save.png', '<b>Salvataggi</b> su più slot con miniatura.'],
+    ['ui4_guida.png', '<b>Guida F1</b> con tutte le regole e i comandi.'],
+  ],
+  'g-models': [
+    ['models4_factions.png', '<b>Le quattro fazioni</b> (AAN, FO, CP, UL) e i mezzi generici: sagome diverse per ogni potenza.'],
+    ['models4_f1_ground.png', '<b>Federazione Orientale</b>: corazza reattiva, torrette a cupola.'],
+    ['models4_f3_ground.png', '<b>Unione Libera</b>: tecniche, vecchi carri con gabbie, lanciarazzi su camion.'],
+    ['models4_air.png', '<b>Aviazione</b> per fazione.'],
+    ['models2_ships.png', '<b>Navi</b>: cacciatorpediniere e nave anfibia.'],
+    ['models2_damage.png', '<b>Danni</b>: annerimento, fumo e fiamme.'],
+    ['models2_vfx.png', '<b>Effetti</b>: esplosioni, fumo, traccianti.'],
+    ['models2_buildings.png', '<b>Edifici</b> per le battaglie urbane.'],
+  ],
+  'g-plan': [
+    ['organizzazione_1_flusso.png', 'Flusso del gioco.'],
+    ['organizzazione_2_tabellone.png', 'Organizzazione del tabellone.'],
+    ['organizzazione_3_battaglia.png', 'Organizzazione della battaglia.'],
+  ],
+};
+for (const id in G) {
+  const el = document.getElementById(id);
+  for (const [f, c] of G[id]) {
+    const fig = document.createElement('figure');
+    fig.innerHTML = '<img src="screens/' + f + '" loading="lazy"><figcaption>' + c + '</figcaption>';
+    fig.querySelector('img').onclick = () => { document.getElementById('lbimg').src = 'screens/' + f; document.getElementById('lb').style.display = 'flex'; };
+    el.appendChild(fig);
+  }
+}
+</script>
+</body></html>
