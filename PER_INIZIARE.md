@@ -2,6 +2,8 @@
 
 Benvenuto nel progetto! Qui trovi cosa serve per far girare il gioco, come è fatto e come lavoriamo insieme.
 
+> **Vuoi solo provarlo?** Scarica lo zip dalla pagina [Releases](https://github.com/villa9030-sketch/frontline-dominion-3d/releases/latest), scompattalo e apri `FrontlineDominion.exe`: non serve installare niente. Dentro trovi `LEGGIMI.txt` e `FEEDBACK.txt`.
+
 ## Il gioco in breve
 RTS moderno che unisce **Risiko** e **Age of Empires**. Due livelli:
 - **Tabellone strategico 3D, a turni.** 42 territori, 4 potenze con caratteristiche diverse. Ogni turno ha tre fasi:
