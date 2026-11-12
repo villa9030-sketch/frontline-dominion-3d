@@ -73,6 +73,7 @@ func _initialize() -> void:
 	test_pending_flow()
 	test_human_defender()
 	test_ai_pacing()
+	test_pace()
 	test_hq_capture_and_victory()
 	test_regional_setup()
 	test_stub_match()
@@ -271,7 +272,8 @@ func test_turn_flow() -> void:
 # ---------------------------------------------------------------- attacco
 func test_attack_rules() -> void:
 	print("- attacco: uno per turno, almeno 1 unità resta, tregua")
-	var g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 21, "auto_battles": true, "ai_script": StubAI})
+	var g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 21, "auto_battles": true, "ai_script": StubAI,
+		"attacks_per_turn": 1})   # regola base (nella tregua iniziale delle partite libere sarebbero 2: vedi test_pace)
 	var s := border(g, 0, -1)
 	g.terr[s["from"]]["forces"] = F({"inf": 20, "tank": 6})
 	g.terr[s["to"]]["forces"] = F({"inf": 2})
@@ -659,18 +661,177 @@ class CountAI:
 		return left > 0
 
 
+# ---------------------------------------------------------------- notte 3: ritmo del tabellone
+func test_pace() -> void:
+	print("- notte 3: attacchi nella tregua, ordini del comando, eventi mondiali, minacce annunciate, inganni solo con la nebbia")
+	var g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 71, "auto_battles": true, "ai_script": StubAI})
+	ok(g.fog_mode == "none" and not g.fog, "nebbia predefinita: nessuna")
+	ok(g.missions_on and g.events_on, "ordini ed eventi accesi nelle partite libere")
+	# --- tregua iniziale: due attacchi per turno (solo neutrali attaccabili)
+	ok(g.in_truce() and g.attacks_max() == 2 and g.attacks_left() == 2, "tregua: 2 attacchi per turno")
+	var s := border(g, 0, -1)
+	g.terr[s["from"]]["forces"] = F({"inf": 30})
+	g.terr[s["to"]]["forces"] = F({"inf": 1})
+	g.players[0]["mission"] = null
+	ok(g.attack(s["from"], s["to"], F({"inf": 8}))["ok"] and not g.attack_used and g.attacks_left() == 1, "dopo il primo attacco ne resta uno")
+	var s2 := {}
+	for j in D.TERRITORIES[s["from"]]["adj"]:
+		if g.terr[j]["owner"] != 0:
+			s2 = {"from": s["from"], "to": j}
+	if s2.is_empty():
+		s2 = {"from": s["from"], "to": D.TERRITORIES[s["from"]]["adj"][0]}
+	g.terr[s2["to"]]["owner"] = -1
+	g.terr[s2["to"]]["forces"] = F({"inf": 1})
+	ok(g.attack(s2["from"], s2["to"], F({"inf": 8}))["ok"] and g.attack_used and g.attacks_left() == 0, "secondo attacco: poi basta")
+	ok(g.turn_status()["attacks_max"] == 2 and g.turn_status()["attacks_left"] == 0, "turn_status espone gli attacchi")
+	turn_of(g, 0, 3)
+	ok(not g.in_truce() and g.attacks_max() == 1, "dopo la tregua: 1 attacco per turno")
+	g.dispose()
+	var gs = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 71, "scenario": "corsa_petrolio", "ai_script": StubAI})
+	ok(gs.scenario != null and not gs.missions_on and not gs.events_on and gs.players[0]["mission"] == null, "scenari: niente ordini né eventi")
+	ok(gs.attacks_max() == 1, "scenari: un attacco per turno anche nella tregua")
+	gs.dispose()
+	# --- ordini del comando
+	g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 72, "auto_battles": true, "ai_script": StubAI})
+	var m = g.mission_of(0)
+	ok(m is Dictionary and int(m["until"]) == D.MISSION_ROUNDS and D.MISSION_REWARDS.has(m["reward"]), "ordine del comando assegnato al primo turno (entro il round %d)" % D.MISSION_ROUNDS)
+	var mt: int = int(m["terr"])
+	var adj_ok := false
+	for t in g.territories_of(0):
+		if D.TERRITORIES[t]["adj"].has(mt):
+			adj_ok = true
+	ok(adj_ok and g.terr[mt]["owner"] == -1, "bersaglio confinante e neutrale durante la tregua")
+	ok(g.mission_text(0).contains(D.TERRITORIES[mt]["name"]) and g.scenario_targets.has(mt), "testo e segnale sul tabellone")
+	for rk in ["card", "reinf", "money"]:
+		g.players[0]["mission"] = {"terr": mt, "until": g.round + 1, "reward": rk, "born": g.round}
+		g.terr[mt]["owner"] = -1
+		var c0: int = g.players[0]["cards"].size()
+		var p0: int = int(g.players[0]["pool"]["inf"])
+		var m0: float = g.players[0]["res"]["money"]
+		g._capture(mt, 0, F({"inf": 2}), {"noCard": true})
+		var got: bool = (g.players[0]["cards"].size() == c0 + 1) if rk == "card" else ((int(g.players[0]["pool"]["inf"]) == p0 + 4) if rk == "reinf" else is_equal_approx(g.players[0]["res"]["money"], m0 + 150.0))
+		ok(got and g.mission_of(0) == null, "ordine eseguito: premio «%s»" % D.MISSION_REWARDS[rk]["name"])
+	ok(int(g.players[0]["stats"].get("missions", 0)) == 3, "ordini eseguiti contati nelle statistiche")
+	turn_of(g, 0, 2)
+	var m2 = g.mission_of(0)
+	ok(m2 is Dictionary and int(m2["terr"]) != mt and int(m2["until"]) == 2 + D.MISSION_ROUNDS - 1, "nuovo ordine al turno successivo")
+	var evs := []
+	g.event.connect(func(n, _d): evs.append(n))
+	turn_of(g, 0, int(m2["until"]) + 1)
+	ok(evs.has("objective_failed") and evs.has("objective_new") and g.mission_of(0) is Dictionary, "ordine scaduto e sostituito")
+	# --- eventi mondiali
+	g.round = 2
+	g.world_event = null
+	g._next_event = 3
+	g._new_round()
+	ok(g.round == 3 and g.world_event is Dictionary and evs.has("world_event") and g.world_event_text() != "", "evento mondiale al round 3: " + g.world_event_text())
+	ok(g._next_event == 3 + D.WORLD_EVENT_EVERY, "prossimo evento dopo %d round" % D.WORLD_EVENT_EVERY)
+	var pt: int = g.territories_of(0)[0]
+	g.world_event = {"id": "convoglio", "terr": pt, "round": 5, "born": 3}
+	g._update_goal_marks()
+	ok(g.scenario_targets.has(pt), "territorio premio segnalato sul tabellone")
+	var money0: float = g.players[0]["res"]["money"]
+	g.round = 4
+	g._new_round()
+	ok(g.world_event == null and is_equal_approx(g.players[0]["res"]["money"], money0 + 250.0), "convoglio: chi controlla il territorio incassa 250 $")
+	g.world_event = {"id": "offensiva", "terr": -1, "round": g.round + 1, "born": g.round}
+	ok(g.attacks_max() == 2, "finestra di bel tempo: un attacco in più")
+	g.world_event = null
+	var nt := -1
+	for tr in g.terr:
+		if tr["owner"] == -1:
+			for j in D.TERRITORIES[tr["idx"]]["adj"]:
+				if g.terr[j]["owner"] >= 0:
+					nt = tr["idx"]
+	if nt >= 0:
+		g.terr[nt]["forces"] = F({"inf": 8, "tank": 2})
+		for tr in g.terr:
+			if tr["owner"] == -1 and tr["idx"] != nt:
+				tr["forces"] = F({"inf": 1})
+		var tries := 0
+		while tries < 60 and not (g.world_event is Dictionary and g.world_event["id"] == "diserzioni"):
+			g.world_event = null
+			g._last_event = ""
+			g.terr[nt]["forces"] = F({"inf": 8, "tank": 2})
+			g._spawn_world_event()
+			tries += 1
+		ok(g.world_event is Dictionary and g.world_event["id"] == "diserzioni" and int(g.world_event["terr"]) == nt and D.total_units(g.terr[nt]["forces"]) == 5, "diserzioni: presidio neutrale dimezzato")
+	g.dispose()
+	# --- minacce annunciate
+	g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 73, "auto_battles": true, "ai_script": StubAI})
+	var b := border(g, 1, 0)
+	g.set_intent(1, b["from"], b["to"])
+	var th: Array = g.threats_for(0)
+	ok(th.size() == 1 and th[0]["player"] == 1 and th[0]["from"] == b["from"] and th[0]["to"] == b["to"] and th[0]["att"] == D.total_units(g.terr[b["from"]]["forces"]), "minaccia annunciata visibile al bersaglio")
+	ok(g.threats_for(1).is_empty(), "chi minaccia non vede la propria come minaccia")
+	g.fog = true; g.fog_mode = "full"; g._vis_cache.clear()
+	ok(g.threats_for(0).size() == 1, "con la nebbia: visibile se il territorio di partenza confina")
+	g.fog = false; g.fog_mode = "none"; g._vis_cache.clear()
+	g.pacts.append({"a": 0, "b": 1, "until": g.round + 3})
+	ok(g.threats_for(0).is_empty(), "con un patto la minaccia non vale")
+	g.pacts.clear()
+	g.set_intent(1, b["to"], b["from"])
+	ok(g.intents[1] == null, "minaccia non valida scartata")
+	g.set_intent(1, b["from"], b["to"])
+	g.end_turn()
+	ok(g.current == 1 and g.intents[1] == null, "la minaccia si toglie quando tocca a chi l'ha annunciata")
+	g.dispose()
+	# IA vera: annuncia e mantiene spesso
+	if ResourceLoader.exists("res://scripts/core/ai.gd"):
+		var tact: bool = CombatS.tactical
+		CombatS.tactical = false
+		var ga = new_game({"players": [{"faction": 0, "human": false}, {"faction": 1, "human": false}, {"faction": 2, "human": false}], "seed": 74, "auto_battles": true})
+		var cnt := {"threat": 0, "kept": 0, "obj": 0, "wev": 0}
+		var ann := {}
+		ga.event.connect(func(n, d):
+			if n == "threat":
+				cnt["threat"] += 1
+				ann[int(d["player"])] = int(d["to"])
+			elif n == "attack" and ann.get(int(d["player"]), -1) == int(d["to"]):
+				cnt["kept"] += 1
+				ann.erase(int(d["player"]))
+			elif n == "objective_done":
+				cnt["obj"] += 1
+			elif n == "world_event":
+				cnt["wev"] += 1)
+		while ga.over == null and ga.round <= 25:
+			ga.update(0.1)
+		ok(cnt["threat"] >= 10 and cnt["kept"] * 3 >= cnt["threat"], "IA: minacce annunciate %d, mantenute %d" % [cnt["threat"], cnt["kept"]])
+		ok(cnt["obj"] >= 5 and cnt["wev"] >= 6, "IA: ordini eseguiti %d, eventi mondiali (inizio+fine) %d" % [cnt["obj"], cnt["wev"]])
+		ok(ga.ai_errors == 0, "nessun errore IA")
+		ga.dispose()
+		CombatS.tactical = tact
+	# --- carte inganno solo con la nebbia
+	g = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 75, "ai_script": StubAI})
+	g.players[0]["cards"] = [{"type": "inf"}, {"type": "inf"}, {"type": "inf"}]
+	var own_t: int = g.territories_of(0)[0]
+	var r: Dictionary = g.play_cards(0, [0, 1, 2], "finta", own_t)
+	ok(not r["ok"] and r["reason"].contains("nebbia") and g.players[0]["cards"].size() == 3, "senza nebbia la divisione falsa non si gioca: " + r["reason"])
+	ok(not g.op_available("silenzio") and not g.op_available("ricognizione") and g.op_available("missile") and g.op_available("rinforzi"), "op_available")
+	g.terr[own_t]["silence"] = 2
+	ok(g.visible_forces(1, own_t) != null, "senza nebbia un vecchio silenzio radio non nasconde nulla")
+	g.dispose()
+	var gf = new_game({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 75, "fog_mode": "light", "ai_script": StubAI})
+	gf.players[0]["cards"] = [{"type": "inf"}, {"type": "inf"}, {"type": "inf"}]
+	ok(gf.op_available("finta") and gf.play_cards(0, [0, 1, 2], "finta", gf.territories_of(0)[0])["ok"], "con la nebbia leggera la divisione falsa si gioca")
+	gf.dispose()
+
+
 func test_ai_pacing() -> void:
 	print("- ritmo dei turni IA")
 	var g = GameS.new({"players": [{"faction": 0, "human": true}, {"faction": 1, "human": false}], "seed": 51, "ai_script": CountAI, "ai_step_delay": 0.5})
 	ok(g.ai_step_delay == 0.5, "opts.ai_step_delay")
 	g.end_turn()
 	var ai = g.ais[1]
-	g.update(0.3)
-	ok(ai.steps == 0, "nessuna azione prima del ritardo")
-	g.update(0.3)
-	ok(ai.steps == 1, "un'azione dopo 0.5 s")
-	g.update(0.5)
-	ok(ai.steps == 2, "un'azione ogni 0.5 s")
+	# notte 3: attese pesate (0.5× all'inizio del turno, 0.3× dopo un'azione che non è un attacco né uno spostamento)
+	g.update(0.2)
+	ok(ai.steps == 0, "nessuna azione prima dell'attesa iniziale (metà ritardo)")
+	g.update(0.1)
+	ok(ai.steps == 1, "prima azione dopo 0.25 s")
+	g.update(0.05)
+	ok(ai.steps == 1, "attesa breve (0.3×) dopo un'azione senza nulla da guardare")
+	g.update(0.1)
+	ok(ai.steps == 2, "seconda azione dopo altri 0.15 s")
 	g.paused = true
 	g.update(5.0)
 	ok(ai.steps == 2, "in pausa l'IA si ferma")
@@ -681,7 +842,9 @@ func test_ai_pacing() -> void:
 	ok(g.current == 0, "durante il turno umano l'IA non agisce")
 	g.speed = 2.0
 	g.end_turn()
-	g.update(0.3)
+	g.update(0.1)
+	ok(ai.steps == 4, "speed 2: non ancora (attesa iniziale 0.125 s)")
+	g.update(0.05)
 	ok(ai.steps == 5, "speed 2 dimezza il ritardo")
 	# spettatore: turni IA uno dopo l'altro
 	var gs = GameS.new({"players": [{"faction": 0, "human": false}, {"faction": 1, "human": false}, {"faction": 2, "human": false}], "seed": 52, "ai_script": CountAI, "ai_step_delay": 0.0})

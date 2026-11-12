@@ -44,6 +44,9 @@ func _ready() -> void:
 	if demo in ["factions", "faction"]:
 		_factions()
 		return
+	if demo == "confronto":
+		_confronto()
+		return
 	if demo == "crowd":
 		_crowd()
 		return
@@ -236,6 +239,33 @@ func _ships() -> void:
 	if Shot.has_arg("stats"):
 		for k in ["ship", "transport"]:
 			print("[gallery] %s tris lod0=%d lod1=%d lod2=%d" % [k, int(UnitModels.build(k, c0, 0).get_meta("tris")), int(UnitModels.build(k, c0, 1).get_meta("tris")), int(UnitModels.build(k, c0, 2).get_meta("tris"))])
+
+## Notte 3 — confronto ravvicinato tra modello in codice (fila dietro) e modello esterno (fila davanti):
+## --demo=confronto [--pairs=tank:0,tank:1,tank:3,heli:0,jet:1] [--dist=m] [--yaw=gradi] [--el=gradi]
+func _confronto() -> void:
+	var pairs := Shot.arg("pairs", "tank:0,tank:1,tank:3").split(",")
+	var gap := float(Shot.arg("gap", "11"))
+	var n := pairs.size()
+	for i in n:
+		var kv := String(pairs[i]).split(":")
+		var k := String(kv[0])
+		var f := int(kv[1]) if kv.size() > 1 else -1
+		var col := Data.faction_color(f)
+		for row in 2:
+			UnitModels._ext_checked = true
+			UnitModels.use_ext = row == 1
+			var m := UnitModels.build(k, col, 0, f)
+			m.position = Vector3(-(i - (n - 1) * 0.5) * gap, 0.0, 200.0 + (0.0 if row == 1 else gap * 0.95))
+			m.rotation.y = deg_to_rad(float(Shot.arg("myaw", "-40")))
+			add_child(m)
+			_collect(m)
+			if Shot.has_arg("stats"):
+				print("[confronto] %s f%d %s tris %d L %.2f h %.2f" % [k, f, "esterno" if row == 1 else "codice", int(m.get_meta("tris", 0)), float(m.get_meta("length", 0.0)), float(m.get_meta("height", 0.0))])
+	UnitModels.use_ext = true
+	var d := float(Shot.arg("dist", str(n * gap * 0.62 + 8.0)))
+	var el := deg_to_rad(float(Shot.arg("el", "30")))
+	_look(Vector3(0, 0, 200.0 + gap * 0.4) + Vector3(0, sin(el), -cos(el)) * d, Vector3(0, 1.0, 200.0 + gap * 0.4))
+	sun.directional_shadow_max_distance = 120
 
 ## Mezzi per fazione: righe = fazioni (AAN, FO, CP, UL, generico), colonne = tipi.
 func _factions() -> void:
@@ -732,7 +762,7 @@ func _process(delta: float) -> void:
 			"TailRotor": n.rotate_x(delta * 40.0)
 			"Prop": n.rotate_z(delta * 50.0)
 			"Radar": n.rotate_y(delta * 2.0)
-	if demo.begins_with("faction"):
+	if demo.begins_with("faction") or demo == "confronto":
 		return
 	if demo == "vfx" and t > 0.3 and t - delta <= 0.3:
 		Vfx.explosion(self, fx_origin + Vector3(2, 0, 4), 1.5)

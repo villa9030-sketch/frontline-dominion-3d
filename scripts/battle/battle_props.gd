@@ -136,6 +136,29 @@ static func _box(st: SurfaceTool, c: Vector3, s: Vector3, col: Color, b: Basis =
 				st.set_color(colf); st.set_normal(nn); st.add_vertex(p[k])
 
 # ---------------------------------------------------------------------------- vegetazione
+static var _tree_lods := {}
+
+## Modello completo dell'albero con i livelli di dettaglio automatici del motore (ImporterMesh.generate_lods): stessa
+## mesh da vicino, versioni via via alleggerite quando il blocco di alberi è piccolo a schermo.
+static func tree_mesh_lods(kind: String) -> Mesh:
+	if _tree_lods.has(kind):
+		return _tree_lods[kind]
+	var src := tree_mesh(kind)
+	var out: Mesh = src
+	if src is ArrayMesh and src.get_surface_count() > 0:
+		var im := ImporterMesh.new()
+		for s in src.get_surface_count():
+			var st := SurfaceTool.new()
+			st.create_from(src, s)
+			st.index()
+			im.add_surface(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays(), [], {}, src.surface_get_material(s), "s%d" % s)
+		im.generate_lods(60.0, 60.0, [])
+		out = im.get_mesh()
+		for k in src.get_meta_list():
+			out.set_meta(k, src.get_meta(k))
+	_tree_lods[kind] = out
+	return out
+
 static func tree_mesh(kind: String, variant := 0) -> Mesh:
 	var P = ext("Props")
 	if P != null and P.has_method("tree_mesh") and kind in ["pine", "broadleaf", "palm", "dead", "snowpine", "bush", "birch", "cypress"]:

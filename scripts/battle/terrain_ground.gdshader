@@ -469,6 +469,24 @@ void fragment() {
 		sc_n *= smoothstep(0.0, 0.5, snow_cover + (n3 - 0.5) * 0.5);
 		col = mix(col, c_snow * (0.9 + 0.1 * n4), clamp(sc_n, 0.0, 1.0));
 	}
+	// NOTTE 3 — artico più contrastato: fuori dal campo i versanti ripidi mostrano la roccia scura che affiora dalla neve,
+	// le spianate hanno lastre di ghiaccio vivo azzurro, valloni e versanti in ombra virano all'azzurro (anche nel campo, meno)
+	if (ttype == 5) {
+		float fk5 = smoothstep(150.0, 600.0, far_d);
+		float rock5 = smoothstep(0.035, 0.11, slope + (n3 - 0.5) * 0.05 + (n2 - 0.5) * 0.03) * fk5 * (1.0 - canopy);
+		vec3 rc5 = mix(vec3(0.13, 0.125, 0.13), vec3(0.27, 0.25, 0.24), n4) * (0.8 + 0.4 * texture(noise_tex, vec2((p.x + p.y) * 0.004, wpos.y * 0.02)).r);
+		col = mix(col, rc5, rock5 * 0.88);
+		sn *= 1.0 - rock5;
+		float ice5 = smoothstep(0.58, 0.76, texture(noise_tex, p / 420.0 + 0.71).r) * (1.0 - smoothstep(0.015, 0.07, slope)) * fk5 * (1.0 - canopy);
+		col = mix(col, vec3(0.36, 0.5, 0.62) * (0.9 + 0.2 * n3), ice5 * 0.55);
+		// chiazze di tundra scoperta (pietrisco e licheni) sulle spianate battute dal vento e sulle dorsali
+		float tn5 = texture(noise_tex, p / 1100.0 + 0.33).r * 0.65 + texture(noise_tex, p / 260.0 + 0.5).r * 0.35;
+		float tun5 = max(smoothstep(0.46, 0.58, tn5), smoothstep(0.03, 0.16, ridge)) * (1.0 - rock5) * (1.0 - ice5) * fk5 * (1.0 - canopy);
+		col = mix(col, vec3(0.27, 0.26, 0.23) * (0.75 + 0.5 * n4), tun5 * 0.72);
+		sn *= 1.0 - tun5 * 0.6;
+		float sh5 = (1.0 - ao) * 0.55 + (1.0 - clamp(dot(nrm, normalize(vec3(-0.55, 0.7, -0.45))), 0.0, 1.0)) * 0.3;
+		col = mix(col, col * vec3(0.6, 0.73, 0.98), clamp(sh5, 0.0, 1.0) * mix(0.3, 0.75, fk5));
+	}
 	// occlusione d'ambiente cotta (valli e fossi), creste leggermente più chiare — anche sulla neve (il rilievo deve leggersi)
 	col *= mix(mix(0.62, 0.5, clamp(relief_k - 1.0, 0.0, 1.0)), 1.0, ao) * (1.0 + ridge * 0.22 * float(ttype != 5));
 	// ombreggiatura del rilievo sempre attiva: i versanti si leggono anche con luce diffusa (Fase 8: più marcata)

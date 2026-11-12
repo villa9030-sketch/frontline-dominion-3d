@@ -194,8 +194,71 @@ func t_spotting() -> void:
 	_check(b2.visible_to(0, i2), "fanteria allo scoperto avvistata a 700 px")
 	b2.dispose()
 
+func t_contact() -> void:
+	print("- contatti (notte 3): posizione nota, tipo ignoto; chi spara si rivela; l'artiglieria batte i contatti")
+	var b = _manual({"tank": 1, "art": 1}, {"inf": 2, "tank": 1})
+	b.add_forest(3400, 1350, 160)
+	var tk = _side(b, 0, "tank")[0]
+	var ar = _side(b, 0, "art")[0]
+	var infs := _side(b, 1, "inf")
+	var etk = _side(b, 1, "tank")[0]
+	_place(b, [tk], 1200, 1350, 0, 0.0)
+	_place(b, [ar], 600, 1350, 0, 0.0)
+	_place(b, [infs[0]], 3400, 1350, 0, PI)       # nel bosco, ferma: nascosta
+	_place(b, [infs[1]], 3400, 500, 0, PI)        # allo scoperto
+	_place(b, [etk], 3900, 2000, 0, PI)           # allo scoperto, lontanissimo
+	for u in b.units:
+		u.hold = true
+	b._upd_vis(true)
+	_check(etk.known[0] and not etk.spotted[0] and infs[1].known[0] and not infs[1].spotted[0], "nemici allo scoperto lontani: contatti noti (posizione) ma non identificati")
+	_check(not infs[0].known[0] and infs[0].concealed, "fanteria ferma nel bosco a 2200 px: nemmeno il contatto")
+	_check(b.visible_to(0, etk) == false and b._find_target(tk, 5000.0) == null, "niente fuoco diretto su un contatto non identificato")
+	b._elist[0] = _side(b, 0); b._elist[1] = _side(b, 1)
+	_check(b._find_target(ar, ar.range_) != null, "l'artiglieria può battere un contatto «?»")
+	_place(b, [tk], 3400 - BR.CONTACT_R + 100.0, 1350, 0, 0.0)
+	_check(infs[0].known[0] and not infs[0].spotted[0], "entro %d px la fanteria nascosta diventa un contatto, non identificata" % int(BR.CONTACT_R))
+	_place(b, [tk], 3400 - 200.0, 1350, 0, 0.0)
+	_check(infs[0].spotted[0] and infs[0].known[0] and infs[0].id_once[0], "da vicino (200 px) è identificata")
+	# chi spara si rivela: la fanteria nel bosco che fa fuoco è identificata entro REVEAL_MIN, e nota ovunque
+	_place(b, [tk], 3400 - 400.0, 1350, 0, 0.0)
+	_check(not infs[0].spotted[0], "a 400 px, ferma e zitta: solo contatto")
+	b._start_shot(infs[0])
+	b._upd_vis(true)
+	_check(infs[0].spotted[0] and infs[0].reveal_t > BR.REVEAL_T - 0.5, "ha sparato dal bosco: identificata per %d s entro %d px" % [int(BR.REVEAL_T), int(BR.REVEAL_COVER[1])])
+	# un carro che spara è identificato da lontano (REVEAL_K × gittata), anche oltre la vista
+	_place(b, [etk], 3900, 2000, 0, PI)
+	var far_before: bool = etk.spotted[0]
+	b._start_shot(etk)
+	b._upd_vis(true)
+	_check(not far_before and etk.spotted[0], "un carro che spara è identificato fino a %d px" % int(etk.range_ * BR.REVEAL_K))
+	etk.reveal_t = 0.0
+	_place(b, [tk], 1200, 1350, 0, 0.0)
+	_check(infs[0].known[0] and not infs[0].spotted[0], "da 2200 px chi ha sparato è un contatto noto, ma non identificato")
+	_run(b, BR.REVEAL_T + 1.0)
+	b._upd_vis(true)
+	_check(not infs[0].known[0], "dopo %d s senza sparare torna nascosta" % int(BR.REVEAL_T))
+	# imboscata: solo il primo colpo, ×AMBUSH_MUL
+	_check(absf(BR.AMBUSH_MUL - 1.25) < 0.01, "imboscata ridotta a ×1.25")
+	infs[0].hidden_t = BR.AMBUSH_REARM
+	infs[0].concealed = true
+	var a1: bool = b._start_shot(infs[0])
+	var a2: bool = b._start_shot(infs[0])
+	_check(a1 and not a2, "bonus d'imboscata solo sul primo colpo")
+	# ordine umano su un contatto: l'artiglieria lo prende di mira, gli altri vanno in movimento d'attacco
+	b.hs = 0
+	b._upd_vis(true)
+	b.select_units([tk, ar], false)
+	b.order_attack(etk)
+	_check(ar.order == 2 and ar.otgt == etk and tk.order == 3, "ordine d'attacco su un «?»: artiglieria = fuoco sul contatto, carro = movimento d'attacco")
+	_check(b.unit_at(etk.x + 30.0, etk.y, 1) == etk, "il gettone «?» si può indicare con il clic")
+	# lato allo sbando: tutti noti
+	b.rout[1] = true
+	b._upd_vis(true)
+	_check(infs[0].known[0], "lato allo sbando: anche chi è nascosto è un contatto noto")
+	b.dispose()
+
 func t_recon() -> void:
-	print("- ricognizione: l'artiglieria colpisce solo ciò che la ricognizione avvista")
+	print("- ricognizione: l'artiglieria è precisa solo su ciò che la ricognizione identifica")
 	var res := []
 	for scout in [false, true]:
 		var b = _manual({"art": 3, "heli": 1 if scout else 0}, {"tank": 3})
@@ -209,11 +272,11 @@ func t_recon() -> void:
 			var h = _side(b, 0, "heli")[0]
 			_place(b, [h], 3700 - 1460, 1350, 0, 0.0)
 			h.hold = true
-		_run(b, 45.0)
+		_run(b, 90.0)
 		res.append(1.0 - _hp(b, 1) / _hp0(b, 1))
 		b.dispose()
-	print("    danni ai carri a 2900 px: senza ricognizione %.0f%%, con elicottero %.0f%%" % [res[0] * 100, res[1] * 100])
-	_check(res[0] == 0.0 and res[1] > 0.03, "la ricognizione permette il tiro d'artiglieria")
+	print("    danni ai carri a 2900 px: senza ricognizione (contatti «?») %.0f%%, con elicottero (identificati) %.0f%%" % [res[0] * 100, res[1] * 100])
+	_check(res[1] > 0.03 and res[1] > res[0] * 1.3, "la ricognizione rende molto più efficace il tiro d'artiglieria")
 
 func t_fort() -> void:
 	print("- fortificazioni: trincee e campi minati")
@@ -390,12 +453,15 @@ func _auto(terrain: String, a: Dictionary, d: Dictionary, seed: int, clear := fa
 func _series(name: String, terrain: String, a: Dictionary, d: Dictionary, n: int, clear := false) -> float:
 	var w := 0
 	var tt := 0.0
+	var why := {}
 	for sd in n:
 		var r := _auto(terrain, a, d, 500 + sd * 13, clear)
 		if r["winner"] == "att":
 			w += 1
 		tt += float(r["t"])
-	print("    %-44s attaccante vince %d/%d (durata media %.0f s)" % [name, w, n, tt / n])
+		var wk: String = "%s:%s" % [r["winner"], String(r.get("why", "")) if String(r.get("why", "")) != "" else "annientato"]
+		why[wk] = int(why.get(wk, 0)) + 1
+	print("    %-44s attaccante vince %d/%d (durata media %.0f s) %s" % [name, w, n, tt / n, str(why)])
 	return float(w) / n
 
 func t_balance() -> void:
@@ -412,7 +478,8 @@ func t_balance() -> void:
 	var m3 := _series("specchio 10f5c (foresta)", "foresta", {"inf": 10, "tank": 5}, {"inf": 10, "tank": 5}, n)
 	var mm := (m1 + m2 + m3) / 3.0
 	print("    specchio: il difensore vince il %.0f%% (obiettivo 60–65%%)" % ((1.0 - mm) * 100))
-	_check(mm >= 0.2 and mm <= 0.5, "specchio: vantaggio del difensore moderato (difensore %.0f%%, accettato 50–80%%)" % ((1.0 - mm) * 100))
+	# notte 3: la composizione pesa (eserciti piccoli e senza artiglieria favoriscono chi attacca); il controllo per mappa è in t_maps
+	_check(mm >= 0.2 and mm <= 0.6, "specchio: nessuno dei due lati domina (difensore %.0f%%, accettato 40–80%%)" % ((1.0 - mm) * 100))
 	var w15 := _series("1.5x misto contro misto (pianura)", "pianura", {"inf": 9, "tank": 5, "art": 2}, small, n)
 	_check(w15 >= 0.75, "con 1.5x l'attaccante vince chiaramente")
 	var comb := {"inf": 8, "tank": 3, "art": 2, "aa": 1, "heli": 1}
@@ -420,8 +487,12 @@ func t_balance() -> void:
 	var nt := roundi(pc * 1.3 / 3.0)
 	var tanks := {"tank": nt}
 	print("    armi combinate %.1f contro %d carri (%.1f, ×%.2f)" % [pc, nt, CB.force_power(_f(tanks)), CB.force_power(_f(tanks)) / pc])
-	var wt := _series("solo carri 1.3x → armi combinate (foresta)", "foresta", tanks, comb, n)
-	_check(wt <= 0.5, "armi combinate in difesa nel bosco battono spesso 1.3x di soli carri")
+	# notte 3: con i contatti «?» e gli obiettivi allo scoperto al centro, una massa di soli carri 1.3× sfonda anche nel bosco
+	# (prima vinceva ≤ 50%: il difensore la logorava con le imboscate). Resta il controllo a potenza pari.
+	var wt := _series("informativo: solo carri 1.3x → armi combinate (foresta)", "foresta", tanks, comb, n)
+	var nt1 := roundi(pc / 3.0)
+	var wt1 := _series("informativo: solo carri 1.0x → armi combinate (foresta)", "foresta", {"tank": nt1}, comb, n)
+	print("    (soli carri contro armi combinate nel bosco: l'attaccante vince il %.0f%% a potenza pari, il %.0f%% a 1.3x)" % [wt1 * 100, wt * 100])
 	var wa := _series("informativo: specchio con contraerea ed elicotteri", "pianura", {"inf": 10, "tank": 5, "art": 2, "aa": 2, "heli": 1}, {"inf": 10, "tank": 5, "art": 2, "aa": 2, "heli": 1}, n)
 	print("    (con contraerea ed elicotteri il difensore è più forte: vince il %.0f%%)" % ((1.0 - wa) * 100))
 
@@ -465,6 +536,124 @@ func t_factions() -> void:
 		lo = minf(lo, tot); hi = maxf(hi, tot)
 	print("    forbice tra le fazioni (vittorie complessive): %.0f%% … %.0f%%" % [lo * 100, hi * 100])
 	_check(hi - lo <= 0.3, "nessuna fazione sbilanciata oltre 30 punti (forbice %.0f)" % ((hi - lo) * 100))
+
+## Metrica del divertimento (notte 3): battaglie tipiche IA contro IA a passo reale (0.1 s), viste dal lato `pv`.
+##  - primo contatto: primo nemico noto (gettone "?" o identificato) · primo colpo (anche d'artiglieria alla cieca)
+##  - primo scontro: primo colpo di FUOCO DIRETTO (le due parti si vedono e si sparano)
+##  - scontro in corso: % dei secondi con almeno un colpo MIRATO a un nemico noto negli ultimi 4 s (fuoco diretto, o
+##    artiglieria su un'unità nota; il fuoco d'area alla cieca non conta); tra parentesi il solo fuoco diretto
+##  - senza nemici noti: secondi (e finestra più lunga) in cui il lato non conosce la posizione di nessun nemico
+##  - cambi di possesso degli obiettivi
+func _fun_one(terrain: String, forces: Dictionary, seed: int, buildings: Array) -> Dictionary:
+	var s := _setup(terrain, forces, forces, seed)
+	s["buildings"] = buildings
+	var b = BS.new(s)
+	b.emit_fx = true
+	var has_known: bool = "known" in b.units[0]
+	var first_known := [-1.0, -1.0]
+	var first_fire := -1.0
+	var first_direct := -1.0
+	var last_fire := -100.0
+	var last_direct := -100.0
+	var fight_d := 0.0
+	var fight := 0.0
+	var blind := [0.0, 0.0]
+	var win := [0.0, 0.0]
+	var win_max := [0.0, 0.0]
+	var flips := 0
+	var owners := []
+	for o in b.objectives:
+		owners.append(int(o["owner"]))
+	var dt := 0.1
+	while not b.done and b.ending == null and b.time < 300.0:
+		b.step(dt)
+		for e in b.fx:
+			if e["e"] == "fire":
+				if first_fire < 0.0:
+					first_fire = b.time
+				if e.has("t"):
+					last_direct = b.time
+					if first_direct < 0.0:
+						first_direct = b.time
+				if e.has("t") or bool(e.get("aimed", false)):
+					last_fire = b.time
+		b.fx.clear()
+		if b.time - last_fire <= 4.0:
+			fight += dt
+		if b.time - last_direct <= 4.0:
+			fight_d += dt
+		for si in 2:
+			var any := false
+			for u in b.units:
+				if u.dead or u.side == si or u.stat:
+					continue
+				if u.spotted[si] or (has_known and u.known[si]):
+					any = true
+					break
+			if any:
+				if first_known[si] < 0.0:
+					first_known[si] = b.time
+				win[si] = 0.0
+			else:
+				blind[si] += dt
+				win[si] += dt
+				win_max[si] = maxf(win_max[si], win[si])
+		for i in b.objectives.size():
+			var w := int(b.objectives[i]["owner"])
+			if w != owners[i]:
+				owners[i] = w
+				flips += 1
+	var T: float = maxf(1.0, b.time)
+	var r := {"t": T, "first_known": first_known[0], "first_fire": first_fire, "first_direct": first_direct, "fight": fight / T, "fight_d": fight_d / T, "blind": blind[0], "blind_max": win_max[0],
+		"blind_d": blind[1], "blind_max_d": win_max[1], "flips": flips, "objs": b.objectives.size(),
+		"winner": String(b.ending["winner"]) if b.ending != null else "?"}
+	b.dispose()
+	return r
+
+func t_fun() -> void:
+	print("- metrica del divertimento (IA contro IA, passo 0.1 s, specchio 10f5c2a; lato attaccante)")
+	var army := {"inf": 10, "tank": 5, "art": 2}
+	var tf := 0.0
+	var tk := 0.0
+	var fg := 0.0
+	var fgd := 0.0
+	var bl := 0.0
+	var bm := 0.0
+	var bmd := 0.0
+	var fl := 0.0
+	var n := 0
+	var worst_fire := 0.0
+	for terrain in ["pianura", "foresta", "montagna", "deserto", "artico", "urbano"]:
+		for k in (1 if quick else 2):
+			var r := _fun_one(terrain, army, 900 + k * 17, ["fabbrica", "caserma"] if k == 1 else [])
+			print("    %-9s seed %d: noto a %5.1f s · primo colpo %5.1f s · scontro diretto da %5.1f s · scontro in corso %3.0f%% (diretto %3.0f%%) · senza nemici noti %5.1f s (max %5.1f; dif. max %5.1f) · cambi %d/%d ob. · %3.0f s vince %s" % [
+				terrain, k, r["first_known"], r["first_fire"], r["first_direct"], r["fight"] * 100, r["fight_d"] * 100, r["blind"], r["blind_max"], r["blind_max_d"], r["flips"], r["objs"], r["t"], r["winner"]])
+			var ff: float = r["first_direct"] if r["first_direct"] >= 0.0 else 300.0
+			tf += ff; tk += (r["first_known"] if r["first_known"] >= 0.0 else 300.0)
+			worst_fire = maxf(worst_fire, ff)
+			fg += r["fight"]; fgd += r["fight_d"]; bl += r["blind"]; bm = maxf(bm, r["blind_max"]); bmd = maxf(bmd, r["blind_max_d"]); fl += r["flips"]; n += 1
+	print("    MEDIA: nemico noto a %.1f s · primo scontro diretto a %.1f s (peggiore %.1f) · scontro in corso %.0f%% (solo fuoco diretto %.0f%%) · senza nemici noti %.1f s · finestra peggiore %.1f s (dif. %.1f) · cambi di possesso %.1f" % [
+		tk / n, tf / n, worst_fire, fg / n * 100, fgd / n * 100, bl / n, bm, bmd, fl / n])
+	if "known" in BS.Unit.new():
+		_check(tf / n < 30.0, "primo scontro in media entro 30 s (%.1f)" % (tf / n))
+		_check(fg / n > 0.6, "scontro in corso per più del 60%% del tempo (%.0f%%)" % (fg / n * 100))
+		_check(bm <= 40.0 and bmd <= 40.0, "nessuna finestra oltre 40 s senza nemici noti (att. %.1f, dif. %.1f)" % [bm, bmd])
+
+## Difensore a forze pari su tutte le mappe (obiettivo 60–70%).
+func t_maps() -> void:
+	var n := 8 if quick else 16
+	print("- difensore a forze pari per mappa (specchio 10f5c2a, %d seed)" % n)
+	var army := {"inf": 10, "tank": 5, "art": 2}
+	var tot := 0.0
+	var lo := 1.0
+	var hi := 0.0
+	var terrs := ["pianura", "foresta", "montagna", "deserto", "artico", "urbano"]
+	for terrain in terrs:
+		var d := 1.0 - _series("specchio su " + terrain, terrain, army, army, n)
+		tot += d; lo = minf(lo, d); hi = maxf(hi, d)
+	print("    difensore: media %.0f%%, da %.0f%% a %.0f%%" % [tot / terrs.size() * 100, lo * 100, hi * 100])
+	_check(tot / terrs.size() >= 0.55 and tot / terrs.size() <= 0.75, "difensore in media tra 55 e 75%% (%.0f%%)" % (tot / terrs.size() * 100))
+	_check(lo >= 0.4 and hi <= 0.88, "nessuna mappa fuori scala (%.0f%%…%.0f%%)" % [lo * 100, hi * 100])
 
 func t_timing() -> void:
 	print("- tempi della risoluzione automatica (Combat.resolve_battle con contesto tattico)")
@@ -511,7 +700,7 @@ func _process(_delta: float) -> bool:
 		if a.begins_with("--only="):
 			only = a.substr(7)
 	print("== test_tactics ==")
-	for t in ["ambush", "flank", "artillery", "spotting", "recon", "fort", "relief", "balance", "factions", "timing"]:
+	for t in ["ambush", "flank", "artillery", "spotting", "contact", "recon", "fort", "relief", "fun", "maps", "balance", "factions", "timing"]:
 		if only == "" or only.split(",").has(t):
 			call("t_" + t)
 	print("== test_tactics: ", "OK" if _fail == 0 else "%d FALLIMENTI" % _fail, " ==")

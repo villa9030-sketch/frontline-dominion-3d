@@ -44,22 +44,29 @@ const MATRIX_OVERRIDE := {
 }
 
 ## Iniziativa dell'attaccante (sceglie dove e quando colpire): moltiplica il danno inflitto dal lato 0.
-## Tarata perché a forze pari il difensore vinca ~60–65% (vedi tests/test_tactics.gd).
-const ATT_INITIATIVE := 1.6
+## Tarata perché a forze pari il difensore vinca ~60–70% su ogni mappa (tests/test_tactics.gd --only=maps).
+## Notte 3: 1.6 → 1.2 (il difensore non ha più l'invisibilità: tiene gli obiettivi contesi vicino alla propria linea).
+const ATT_INITIATIVE := 1.2
+## Notte 3 — difesa preparata per terreno: moltiplica il danno inflitto dal difensore (taratura per mappa: in città si
+## combatte casa per casa e i carri del difensore sono esposti nelle strade; altrove la copertura basta).
+const DEF_TERRAIN := {"urbano": 1.35}
 const LUCK := 0.1                 # deviazione standard delle "condizioni del giorno" per lato (danno inflitto)
 
 # ---- visibilità e copertura
 const SPOT_DT := 0.25             # intervallo di aggiornamento della visibilità (s)
 const AIR_SEEN := 1.25            # i velivoli si vedono da più lontano (vista × AIR_SEEN)
 const AA_AIR_VIEW := 2200.0       # radar della contraerea contro i velivoli
-const CONCEAL_INF := [0.0, 240.0, 190.0]   # distanza massima a cui si scopre fanteria ferma in copertura [aperto, leggera, pesante]
+const CONCEAL_INF := [0.0, 240.0, 190.0]   # distanza massima a cui si IDENTIFICA fanteria ferma in copertura [aperto, leggera, pesante]
 const CONCEAL_VEH := [0.0, 350.0, 300.0]   # idem per un mezzo fermo in copertura
 const CONCEAL_SMOKE := 160.0      # unità nel fumo: scoperte solo da vicino
 const RECON_CONCEAL := 1.8        # elicotteri/droni scoprono le unità nascoste da più lontano
 const SLOW_FRAC := 0.35           # "ferma o lenta": velocità sotto questa frazione del massimo
-const REVEAL_T := 4.0             # dopo aver sparato un'unità resta visibile per questi secondi
+const REVEAL_T := 6.0             # dopo aver sparato un'unità resta rivelata per questi secondi (lampo di bocca): la POSIZIONE è nota ovunque,
+                                  # il TIPO è identificato da ogni nemico entro REVEAL_K × la sua gittata (almeno REVEAL_MIN), senza linea di vista
+const REVEAL_K := 1.5             # carri 2100 px, contraerea 1650, bunker 1200, artiglieria tutto il campo
+const REVEAL_MIN := 700.0         # fanteria allo scoperto (gittata 360): identificata entro 700 px quando spara
 const REVEAL_OPEN := 1.5          # ... allo scoperto: vista del nemico × questo (vampate visibili da lontano)
-const REVEAL_COVER := [0.0, 420.0, 380.0]   # ... in copertura: solo entro questa distanza (fanteria)
+const REVEAL_COVER := [0.0, 420.0, 380.0]   # fanteria che spara da una copertura [-, leggera, pesante]: identificata solo entro questa distanza (resta un contatto «?» noto ovunque)
 const REVEAL_GUN := 1600.0        # cannoni dei mezzi/bunker che sparano: visibili ad almeno questa distanza (vampa, polvere)
 const GHOST_T := 20.0             # durata dei fantasmi (ultima posizione nota)
 
@@ -77,11 +84,11 @@ const VEH_VS_COVER_INF := 0.6     # in più, se a sparare è un mezzo (carro/con
 const COVER_VEH := [1.0, 0.9, 0.8]       # fuoco diretto su mezzi in copertura
 const COVER_ART_INF := [1.0, 0.8, 0.6]     # artiglieria/bombe su fanteria in copertura
 const TANK_GUN_VS_ARMOR := 1.8    # cannone del carro contro mezzi corazzati: un colpo sul fianco/retro ne mette fuori uso ~1/3–1/2
-const AMBUSH_MUL := 1.6           # bonus dei primi colpi da posizione nascosta
-const AMBUSH_T := 5.0             # durata dell'imboscata
+const AMBUSH_MUL := 1.25          # bonus del PRIMO colpo da posizione nascosta (notte 3: era ×1.6 per 5 s)
+const AMBUSH_T := 1.2             # solo indicatore per la vista (il bonus vale per un colpo)
 const AMBUSH_REARM := 12.0        # secondi di nuovo nascosta prima di poter tendere un'altra imboscata
 const AT_RANGE := 380.0           # fanteria anticarro: distanza utile (lanciarazzi/missili, oltre la gittata dei fucili)
-const AT_COVER_MUL := 5.0         # ... in copertura contro mezzi corazzati
+const AT_COVER_MUL := 8.0         # ... in copertura contro mezzi corazzati (notte 3: era 5 con imboscata ×1.6; ora l'imboscata vale poco e il «?» avvisa)
 const AT_OPEN_MUL := 1.4          # ... allo scoperto
 const ARMORED := {"tank": true, "art": true, "aa": true}
 const FLANK_FRONT := 0.7854       # |angolo| < 45° = fronte
@@ -127,19 +134,36 @@ const RUBBLE_COVER := 2            # macerie di un edificio crollato: copertura 
 # ---- Omogeneità campagna ↔ battaglia (notte 2, docs/omogeneita.md)
 const BATTLE_T := 300.0           # s: limite della battaglia (anche in risoluzione automatica); allo scadere decidono gli obiettivi
 const OBJ_R := 260.0              # px: raggio di controllo di un obiettivo
-const OBJ_HOLD := 60.0            # s di presenza esclusiva per conquistare un obiettivo
+const OBJ_HOLD := 30.0            # s di presenza esclusiva per conquistare un obiettivo (notte 3: era 60)
 const OBJ_MAX := 4                # obiettivi al massimo per battaglia
 const OBJ_HILL_MIN := 6.0         # m sopra la quota minima perché un'altura sia un obiettivo
 const RETREAT_EDGE := 150.0       # px dal proprio bordo: un reparto che lo raggiunge in ritirata è salvo
-const AI_RETREAT_T := 120.0       # s: da quando l'IA attaccante può ritirarsi...
-const AI_RETREAT_K := 0.35        # ... se la sua potenza è sotto questa frazione di quella del difensore
+const AI_RETREAT_T := 80.0        # s: da quando l'IA attaccante può ritirarsi...
+const AI_RETREAT_K := 0.4         # ... se la sua potenza è sotto questa frazione di quella del difensore
 const REINF_SHARE := 0.2          # quota delle unità di terra di ogni territorio confinante che arriva come rinforzo
 const REINF_CAP := 0.5            # tetto dei rinforzi: frazione dell'esercito iniziale del lato
-const REINF_T := [165.0, 150.0]   # s di arrivo dei rinforzi [attaccante, difensore]
+const REINF_T := [105.0, 90.0]   # s di arrivo dei rinforzi [attaccante, difensore]
 const NAVAL_SUPPORT := [3, 2]     # batterie navali: [attaccante dal mare con porto, difensore con porto]
 const REINF_TYPES := ["inf", "tank", "art", "aa"]
 const BUILDING_SITES := {"caserma": "Caserma", "fabbrica": "Fabbrica", "aeroporto": "Aeroporto", "porto": "Porto",
 	"impianto": "Raffineria", "bunker": "Fortino"}
+
+# ---- Notte 3: da "nascondino" a scontro (stile R.U.S.E.; docs/notte3_battaglia.md)
+## Contatto ("?"): la POSIZIONE di un nemico a terra è nota al lato avversario (`u.known[si]`) se l'unità è allo scoperto,
+## in movimento o ha appena sparato (ovunque sul campo), oppure — se è ferma in copertura — entro CONTACT_R da una qualunque
+## unità di quel lato (× meteo; ricognizione × CONTACT_RECON). Il TIPO resta ignoto finché non è identificata (`spotted`).
+const CONTACT_R := 1500.0
+const CONTACT_RECON := 1.6        # elicotteri/droni/esploratori rilevano i contatti da più lontano
+const CONTACT_SCATTER := 1.7      # artiglieria su un contatto non identificato: dispersione × questo
+const CONTACT_MEM := 8.0          # s: un contatto perso resta sulla mappa come fantasma (ultima posizione) — poi GHOST_T
+const FRONT_X := [1560.0, 1560.0] # px dal proprio bordo: linea di schieramento [attaccante, difensore] (era 1150: 2500 px di terra di nessuno)
+const OBJ_BAND := [0.42, 0.66]    # fascia contesa (frazione di W), un po' più vicina alla linea del difensore: gli obiettivi neutri stanno qui
+const OBJ_MID := 0.54             # x (frazione di W) delle località neutre: 650 px dalla linea del difensore, 1030 da quella dell'attaccante
+const OBJ_SEP := 560.0            # px: distanza minima tra due obiettivi
+const WARN_T := 20.0              # s di preavviso per rinforzi (evento "announce" con conto alla rovescia)
+const AI_AIR_WARN := 7.0          # s tra l'annuncio dell'attacco aereo dell'IA e lo sgancio (il giocatore può spostarsi)
+const ROUT_FRAC := 0.35           # lato "allo sbando" sotto questa frazione delle unità iniziali: non può più nascondersi (tutti contatti noti)
+const AI_AIR_T := 45.0            # s: da quando l'IA può chiamare l'attacco aereo
 
 
 ## Piano meteo deterministico dal seed: {"start": kind, "changes": [[t_s, kind], ...]} (al più un cambiamento, tra 70 e 200 s).

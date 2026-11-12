@@ -233,7 +233,7 @@ func update() -> void:
 		"source":
 			if not mine:
 				_go("ai")
-			elif main.attack_used() or main.move_used() or ph == "move":
+			elif main.attacked_any() or main.move_used() or ph == "move":
 				_go("result" if ph != "move" else "move")
 			elif main.modal_kind == "attack":
 				_go("panel")
@@ -242,14 +242,14 @@ func update() -> void:
 		"target":
 			if main.modal_kind == "attack":
 				_go("panel")
-			elif main.attack_used():
+			elif main.attacked_any():
 				_go("result")
 			elif not (main.sel_own() and not main.targets.is_empty()):
 				_go("source")
 			elif main.sel != _src:
 				_go("target")
 		"panel":
-			if main.attack_used():
+			if main.attacked_any():
 				if main.modal_kind == "" or main.modal_kind == "summary":
 					_go("result")
 			elif main.modal_kind == "" and main.battle == null:

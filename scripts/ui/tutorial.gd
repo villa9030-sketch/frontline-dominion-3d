@@ -193,9 +193,9 @@ func _want(id: String) -> bool:
 			"deploy":
 				return free and main.my_phase("supply") and Data.total_units(P["pool"]) > 0 and Settings.tip_seen("welcome") and _since_hidden() > 1.0
 			"attack":
-				return free and main.my_turn() and not main.attack_used() and main.phase_key() != "move" and Settings.tip_seen("welcome") and Data.total_units(P["pool"]) == 0 and _since_hidden() > 1.0
+				return free and main.my_turn() and not main.attacked_any() and main.phase_key() != "move" and Settings.tip_seen("welcome") and Data.total_units(P["pool"]) == 0 and _since_hidden() > 1.0
 			"endturn":
-				return free and main.my_turn() and (main.attack_used() or main.phase_key() == "move")
+				return free and main.my_turn() and (main.attacked_any() or main.phase_key() == "move")
 			"truce":
 				return free and main.my_turn() and _rnd() >= 2 and main.truce_turns() > 0
 			"build":
@@ -243,7 +243,7 @@ func _done(id: String) -> bool:
 			"welcome":
 				return (main.sel >= 0 and main.sel != int(P["hq"])) or main.phase_key() != "supply"
 			"attack":
-				return main.attack_used() or not main.my_turn()
+				return main.attacked_any() or not main.my_turn()
 			"endturn":
 				return not main.my_turn()
 	match id:

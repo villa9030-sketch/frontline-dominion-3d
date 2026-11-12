@@ -41,7 +41,7 @@ tra territori tuoi collegati (uno per turno). Il tutorial ha un passo dedicato e
    mette lì tutti i rinforzi (Esc o «Annulla schieramento» per guardare prima il tabellone; «Schiera» per riprendere).
    Poi si recluta (1–3 turni), si costruisce, si **fortifica** (trincee, campi minati, bunker, livelli 0–3), si ricerca, si commercia,
    si giocano le carte, si assoldano mercenari. Passando all'attacco con rinforzi non schierati il gioco chiede conferma.
-2. **Attacco** (uno per turno, facoltativo): clic su un tuo territorio che pulsa in ambra, poi su un bersaglio rosso
+2. **Attacco** (uno per turno, facoltativo; due nei round di tregua iniziale, contro i neutrali): clic su un tuo territorio che pulsa in ambra, poi su un bersaglio rosso
    (confinanti nemici o neutrali, rotte marittime con porto) → **pannello d'attacco** con un cursore per ogni tipo di unità
    (almeno una resta a presidio), previsione dell'esito, terreno, fortificazioni e veterani del difensore (stimati nella nebbia).
    Poi **«Attacca: comando diretto (3D)»** o **«Attacca: risoluzione automatica»**. Oppure «Salta attacco».
@@ -112,7 +112,10 @@ la schermata finale riporta lo scenario e il motivo della vittoria.
 - Economia (denaro, petrolio, acciaio, manodopera), 6 edifici, 4 livelli tecnologici, mercato internazionale.
 - **Tabellone a turni** (Rifornimento › Attacco › Spostamento), un attacco e uno spostamento per turno, fortificazioni a livelli.
 - Rifornimenti, petrolio, tregua iniziale, milizia, occupazione e riorganizzazione dopo le conquiste.
-- Carte Comando (rinforzi, missile, sabotaggio, golpe) e **carte inganno** (divisione falsa, silenzio radio, ricognizione); bonus dei continenti.
+- Carte Comando (rinforzi, missile, sabotaggio, golpe) e, nelle partite con la nebbia, **carte inganno** (divisione falsa, silenzio radio, ricognizione); bonus dei continenti.
+- **Ordini del comando** (un obiettivo a breve termine per turno, con premio), **eventi mondiali** ogni 4 round (territori premio, diserzioni,
+  finestra di bel tempo), **minacce annunciate** (vedi quale attacco prepara ogni IA) e il rapporto «Dall'ultimo turno» all'inizio del turno.
+  La nebbia di guerra è **spenta di default** (si gioca a carte scoperte); leggera e totale restano tra le opzioni della nuova campagna.
 - **La campagna decide la battaglia** (`docs/omogeneita.md`): battaglie di 5 minuti con **obiettivi** dal territorio (QG, edifici, ponti, alture),
   **rinforzi** dai territori vicini a metà battaglia, supporto aereo solo con aeroporto, tiro navale con porto, **ritirata ordinata**,
   comando diretto +10% ed esperienza doppia, **logoramento** (−15% per un turno dopo ogni battaglia).

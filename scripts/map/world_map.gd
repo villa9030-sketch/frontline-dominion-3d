@@ -654,9 +654,59 @@ func _build_markers() -> void:
 			sm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			sm.visible = false
 			vets.add_child(sm)
-		_markers.append({"root": root, "holder": holder, "bld": bld, "vets": vets, "sig": "", "color": Color(0, 0, 0, 0),
+		# NOTTE 3 — logoramento (terr.worn): anello arancione a tratti sotto la pedina e "cerotto" a croce accanto
+		var wring := _ring(root, 1.5, Color(1.0, 0.55, 0.1, 0.85), 0.88)
+		wring.set_instance_shader_parameter("dashes", 14.0)
+		wring.set_instance_shader_parameter("spin", 0.12)
+		var wpatch := MeshInstance3D.new()
+		wpatch.mesh = _worn_mesh()
+		wpatch.material_override = _worn_material()
+		wpatch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		wpatch.visible = false
+		root.add_child(wpatch)
+		_markers.append({"root": root, "holder": holder, "bld": bld, "vets": vets, "wring": wring, "wpatch": wpatch, "worn": 0, "worn_set": -1, "sig": "", "color": Color(0, 0, 0, 0),
 			"count": -2, "bkeys": "", "anim": "", "anim_t": 9.0, "prev_owner": -99, "prev_count": -99, "top": 1.0,
 			"vet": 0, "prev_vet": -1, "vis": true})
+
+## Cerotto del logoramento: due fasce incrociate (una X) arancioni, in piedi accanto alla pedina.
+var _worn_m: ArrayMesh
+var _worn_mat: StandardMaterial3D
+func _worn_mesh() -> ArrayMesh:
+	if _worn_m == null:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for ang in [0.6, -0.6]:
+			var bs := Basis(Vector3.BACK, float(ang))
+			var hx := 0.5
+			var hy := 0.11
+			var hz := 0.03
+			var c := [Vector3(-hx, -hy, -hz), Vector3(hx, -hy, -hz), Vector3(hx, hy, -hz), Vector3(-hx, hy, -hz),
+				Vector3(-hx, -hy, hz), Vector3(hx, -hy, hz), Vector3(hx, hy, hz), Vector3(-hx, hy, hz)]
+			for f in [[0, 1, 2, 3, Vector3.FORWARD], [5, 4, 7, 6, Vector3.BACK], [3, 2, 6, 7, Vector3.UP], [4, 5, 1, 0, Vector3.DOWN], [1, 5, 6, 2, Vector3.RIGHT], [4, 0, 3, 7, Vector3.LEFT]]:
+				for idx in [0, 2, 1, 0, 3, 2]:
+					st.set_normal(bs * (f[4] as Vector3))
+					st.add_vertex(bs * (c[int(f[idx])] as Vector3))
+		_worn_m = st.commit()
+	return _worn_m
+
+func _worn_material() -> StandardMaterial3D:
+	if _worn_mat == null:
+		_worn_mat = StandardMaterial3D.new()
+		_worn_mat.albedo_color = Color(1.0, 0.5, 0.08)
+		_worn_mat.emission_enabled = true
+		_worn_mat.emission = Color(1.0, 0.45, 0.05)
+		_worn_mat.emission_energy_multiplier = 0.9
+		_worn_mat.roughness = 0.6
+		_worn_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return _worn_mat
+
+## Pedina "sporca" quando il presidio è logorato: fuliggine leggera sulle miniature (stesso velo dei mezzi danneggiati).
+func _set_worn_look(mk: Dictionary, worn: int) -> void:
+	var ov: Material = UnitModels._soot_mat(1 if worn == 1 else 2) if worn > 0 else null
+	for n in (mk["holder"] as Node).find_children("*", "MeshInstance3D", true, false):
+		if not String(n.name).begins_with("Base"):
+			(n as MeshInstance3D).material_overlay = ov
+	mk["worn_set"] = worn
 
 func _gold_material() -> StandardMaterial3D:
 	if _gold_mat == null:
@@ -733,6 +783,19 @@ func _start_demo() -> void:
 		_demo_objectives = ["alaska", "maghreb", "medioriente", "siberia", "indonesia"]
 	if _shot_arg("marks") != "":
 		set_marks([13, 14, 15, 16], Color(0.4, 1.0, 0.55))
+	if _shot_arg("worn") != "":
+		# collaudo: presìdi logorati su alcuni territori (indici separati da virgola)
+		for ws in _shot_arg("worn").split(","):
+			if int(ws) >= 0 and int(ws) < NT:
+				game.terr[int(ws)]["worn"] = 1 + int(ws) % 2
+	if _shot_arg("threats") != "":
+		# collaudo: minacce annunciate «da:a» separate da virgola
+		var tl2: Array = []
+		for ts in _shot_arg("threats").split(","):
+			var ab := ts.split(":")
+			if ab.size() == 2:
+				tl2.append({"from": int(ab[0]), "to": int(ab[1]), "owner": int(game.terr[int(ab[0])]["owner"]), "n": 9, "def": 6, "turn": true})
+		set_threats(tl2)
 	if _shot_arg("buildings") != "":
 		_demo_buildings()
 	if _shot_arg("capture") != "" and _decor != null:
@@ -1606,6 +1669,7 @@ func _update_markers(force: bool, delta: float) -> void:
 		if force or sig != mk["sig"]:
 			mk["sig"] = sig
 			_rebuild_minis(mk, kinds, n, col, fac)
+			mk["worn_set"] = -1
 		mk["color"] = col
 		mk["count"] = cnt
 		var holder: Node3D = mk["holder"]
@@ -1634,6 +1698,24 @@ func _update_markers(force: bool, delta: float) -> void:
 		holder.position.y = y * mini_s * 0.5
 		# edifici 3D: li disegna MapDecor (porti, aeroporti, fabbriche...); qui resta solo il nodo vuoto
 		mk["bld"].visible = false
+		# logoramento: visibile solo dove il giocatore vede il territorio
+		var worn := clampi(int(st.get("worn", 0)), 0, 2) if vis and cnt > 0 else 0
+		mk["worn"] = worn
+		if int(mk["worn_set"]) != worn:
+			_set_worn_look(mk, worn)
+		var wring: MeshInstance3D = mk["wring"]
+		var wpatch: MeshInstance3D = mk["wpatch"]
+		wring.visible = worn > 0 and show_minis
+		wpatch.visible = worn > 0 and show_minis and dist < DIST_NEAR + 26.0
+		if worn > 0:
+			var wp := 1.0 + 0.06 * sin(_real_t * 3.0 + float(i))
+			wring.scale = Vector3(1.12 * mini_s * wp, 1.0, 1.12 * mini_s * wp)
+			wring.position.y = 0.12
+			wring.set_instance_shader_parameter("ring_color", Color(1.0, 0.55, 0.1, 0.8 if worn > 1 else 0.5))
+			wpatch.position = Vector3(-1.05 * mini_s, (0.75 + 0.06 * sin(_real_t * 2.2 + float(i))) * mini_s + y * mini_s * 0.5, 0.55 * mini_s)
+			wpatch.scale = Vector3.ONE * 0.55 * mini_s
+			if camera != null:
+				wpatch.rotation.y = camera.rotation.y
 		# stelline dei veterani: in fila davanti alle miniature, girano lentamente come medaglie
 		var vets: Node3D = mk["vets"]
 		var show_v: bool = vet > 0 and show_minis and dist < DIST_NEAR + 14.0 and cnt > 0
@@ -2107,6 +2189,56 @@ func _make_division(d: Dictionary) -> Dictionary:
 var _turn_anims: Array = []
 const TURN_HOLD := 1.4
 
+## NOTTE 3 — minacce annunciate (richiesta di TABELLONE): attacchi che le IA stanno preparando. Freccia PERSISTENTE
+## tratteggiata e pulsante dal territorio `from` al territorio `to`, nel colore della fazione `owner`, con anello sul
+## bersaglio; resta finché la lista non cambia. list = [{from, to, owner, n, def, turn}] (vuota = nessuna).
+var _threats: Array = []
+func set_threats(list: Array) -> void:
+	_threats = []
+	for t in list:
+		if t is Dictionary and int(t.get("from", -1)) >= 0 and int(t.get("to", -1)) >= 0 and int(t["from"]) < NT and int(t["to"]) < NT and int(t["from"]) != int(t["to"]):
+			_threats.append((t as Dictionary).duplicate())
+
+func threats() -> Array:
+	return _threats
+
+func _draw_threats(s: float) -> void:
+	for i in _threats.size():
+		var t: Dictionary = _threats[i]
+		var a := int(t["from"])
+		var bb := int(t["to"])
+		var col := _owner_color(int(t.get("owner", -1))).lightened(0.1)
+		var pul := 0.5 + 0.5 * sin(_real_t * 3.2 + float(i) * 1.3)
+		# grossezza secondo il rapporto di forze annunciato
+		var k := clampf(float(t.get("n", 6)) / maxf(float(t.get("def", 6)), 1.0), 0.6, 1.8)
+		col.a = 0.6 + 0.35 * pul
+		var A: Vector3 = _centers[a] + Vector3(0, 0.3, 0)
+		var B: Vector3 = _centers[bb] + Vector3(0, 0.3, 0)
+		if _is_wrap(a, bb):
+			# rotta che passa dal bordo della mappa: due monconi verso i bordi
+			var dirx := -1.0 if A.x < 0.0 else 1.0
+			_arrow(_arc_points(A, A + Vector3(dirx * 7.0, 0, 0), 1.2, 10), 0.2 * s * k, col, 0.7 / s, 1.6, 0.9 * s)
+			_arrow(_arc_points(B + Vector3((-1.0 if B.x < 0.0 else 1.0) * 7.0, 0, 0), B, 1.2, 10), 0.2 * s * k, col, 0.7 / s, 1.6, 0.9 * s)
+			continue
+		var L := A.distance_to(B)
+		var arc := _arc_points(A, B, L * 0.2 + 0.6, 26)
+		# parte fuori dalla pedina di partenza e si ferma prima di quella d'arrivo
+		var pts := arc.slice(3, 24)
+		_arrow(pts, 0.17 * s * k, col, 0.55 / s, 1.6, 0.7 * s * minf(k, 1.3))
+	# anello che si stringe sul bersaglio
+	for i in _threats.size():
+		var t: Dictionary = _threats[i]
+		var c: Vector3 = _centers[int(t["to"])] + Vector3(0, 0.28, 0)
+		var col := _owner_color(int(t.get("owner", -1))).lightened(0.3)
+		var u := fmod(_real_t * 0.6 + float(i) * 0.37, 1.0)
+		col.a = 0.75 * (1.0 - u)
+		var r := lerpf(2.6, 1.3, u) * s
+		var ring := PackedVector3Array()
+		for q in 33:
+			var ang := TAU * float(q) / 32.0
+			ring.append(c + Vector3(cos(ang) * r, 0, sin(ang) * r))
+		_ribbon(_overlay_top, ring, 0.1 * s, col, 0.0, 0.0)
+
 func turn_arrow(from: int, to: int, owner: int, kind: String = "attack", dur: float = 0.9, forces = null) -> void:
 	if from < 0 or to < 0 or from >= NT or to >= NT or from == to:
 		return
@@ -2446,6 +2578,8 @@ func _draw_overlay() -> void:
 			_ribbon(_overlay_top, pts, 0.22 * s, Color(1.0, 0.55, 0.35, 0.8), 0.0, 0.0, true)
 	if game != null:
 		_draw_turn_anims(s)
+		if not _threats.is_empty():
+			_draw_threats(s)
 	# freccia di trascinamento
 	if drag_active and drag_from >= 0:
 		var A: Vector3 = _centers[drag_from] + Vector3(0, 0.3, 0)

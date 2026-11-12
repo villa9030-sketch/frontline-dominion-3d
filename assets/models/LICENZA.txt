@@ -1,0 +1,31 @@
+FRONTLINE DOMINION 3D — modelli 3D esterni (cartella assets/models)
+====================================================================
+
+I file .glb di questa cartella derivano da modelli liberi scaricati l'11-12 novembre 2026 e convertiti per il gioco
+(assi Y su / avanti -Z, origine a terra, parti rinominate Body / Turret / Barrel / Muzzle / Rotor, proporzioni adattate,
+colori originali sostituiti dalla vernice del gioco: mimetica e colori di fazione di paint.gdshader).
+Licenza verificata sulla pagina di ogni modello al momento del download.
+
+CC0 1.0 (pubblico dominio) — nessun obbligo; citati per correttezza
+-------------------------------------------------------------------
+tank.glb     "Tank" di Quaternius                  https://poly.pizza/m/jWS1CLA0RO
+tank_f0.glb  "Tank" di Quaternius                  https://poly.pizza/m/FA5daiyZQq
+tank_f3.glb  "Tank" di Quaternius                  https://poly.pizza/m/cW3zvvkMOM
+             (Animated Tanks Pack, https://quaternius.com/packs/animatedtanks.html)
+             Licenza: https://creativecommons.org/publicdomain/zero/1.0/
+
+CC-BY 3.0 (Creative Commons Attribuzione) — attribuzione OBBLIGATORIA
+---------------------------------------------------------------------
+aa.glb       "Light Tank" di Zsky                  https://poly.pizza/m/S1jUTRmAjD
+heli.glb     "Helicopter" di Zsky                  https://poly.pizza/m/hG2Qr0A3zR
+jet.glb      "Jet" di jeremy                       https://poly.pizza/m/6fyLMORhgGK
+             Licenza: https://creativecommons.org/licenses/by/3.0/
+             Modifiche: conversione, scala, separazione di rotore / casamatta / canne, nuovi materiali e colori (vedi sopra).
+
+Uso nel gioco
+-------------
+tank.glb     carro di Federazione Orientale e neutrali     tank_f0.glb  carro dell'Alleanza Atlantica del Nord
+tank_f3.glb  carro dell'Unione Libera                      heli.glb     elicottero d'attacco (tutte le fazioni)
+jet.glb      caccia (tutte le fazioni)                     aa.glb       contraerea semovente (AAN, FO, neutrali)
+La Coalizione del Pacifico tiene il suo carro su ruote generato in codice, e con l'Unione Libera la contraerea su ruote. Se un file manca, il gioco usa il modello
+generato in codice (scripts/models/unit_models.gd, funzione ext_path).

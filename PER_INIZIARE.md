@@ -51,6 +51,15 @@ Gli altri test sono elencati nel `README.md`: `test_save`, `test_fase3`, `test_s
 
 I test non toccano salvataggi e impostazioni del giocatore.
 
+## Crediti dei modelli 3D
+Carri, contraerea, elicottero e caccia usano modelli liberi convertiti per il gioco (dettagli e licenze in `assets/models/LICENZA.txt`):
+- **Carri armati**: «Tank» (Animated Tanks Pack) di **Quaternius** — CC0 1.0, pubblico dominio (poly.pizza / quaternius.com).
+- **Elicottero**: «Helicopter» di **Zsky** — CC-BY 3.0 (https://poly.pizza/m/hG2Qr0A3zR), modificato.
+- **Contraerea semovente**: «Light Tank» di **Zsky** — CC-BY 3.0 (https://poly.pizza/m/S1jUTRmAjD), modificato.
+- **Caccia**: «Jet» di **jeremy** — CC-BY 3.0 (https://poly.pizza/m/6fyLMORhgGK), modificato.
+
+Tutti gli altri mezzi, i soldati, le navi e gli edifici sono generati in codice.
+
 ## Come lavoriamo insieme
 - **Non lavorare direttamente su `main`.** Crea un ramo per ogni lavoro, per esempio `git checkout -b marco/nome-modifica`, poi apri una **Pull Request** su GitHub così la guardiamo insieme.
 - **Prima della Pull Request**: lancia i test della parte che hai toccato, e il gioco deve partire senza `SCRIPT ERROR`.

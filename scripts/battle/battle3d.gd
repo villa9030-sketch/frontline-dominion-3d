@@ -1853,6 +1853,14 @@ func _consume_fx(silent: bool) -> void:
 			"spotted":
 				if not silent:
 					_on_spotted(e)
+			"contact":
+				# notte 3: nuovo contatto "?" (posizione nota, tipo ignoto)
+				if not silent and sim.hs >= 0 and pings.size() < 30:
+					var cw := BattleTerrain.sim_to_world(float(e.get("x", 0.0)), float(e.get("y", 0.0)))
+					pings.append({"p": Vector3(cw.x, maxf(terrain.height(cw.x, cw.y), 0.0) + 2.0, cw.y), "t": 0.0, "col": Color(1.0, 0.85, 0.4)})
+			"announce":
+				if not silent:
+					_on_announce(e)
 			"ambush":
 				if not silent:
 					_on_ambush(e)
@@ -3109,6 +3117,51 @@ func is_visible_unit(u) -> bool:
 	if not _tactical or sim.hs < 0 or u.side == sim.hs:
 		return true
 	return bool(sim.call("visible_to", sim.hs, u))
+
+## Notte 3 — contatto: nemico di cui il giocatore conosce la POSIZIONE ma non il tipo (gettone "?"; `u.known[hs]` senza `u.spotted[hs]`).
+func is_contact_unit(u) -> bool:
+	if not _tactical or sim.hs < 0 or u.side == sim.hs or u.dead:
+		return false
+	var kn = u.get("known")
+	return kn != null and bool(kn[sim.hs]) and not bool(u.spotted[sim.hs])
+
+## Notte 3 — eventi annunciati dalla sim (rinforzi in arrivo, attacco aereo, obiettivo minacciato): avviso + segnale sul campo.
+func _on_announce(e: Dictionary) -> void:
+	var kind := String(e.get("kind", ""))
+	var side := int(e.get("side", -1))
+	var w := BattleTerrain.sim_to_world(float(e.get("x", 0.0)), float(e.get("y", 0.0)))
+	var p := Vector3(w.x, maxf(terrain.height(w.x, w.y), 0.0) + 2.0, w.y)
+	var mine: bool = sim.hs >= 0 and side == sim.hs
+	var secs := ceili(float(e.get("t", 0.0)))
+	match kind:
+		"reinf":
+			pings.append({"p": p, "t": 0.0, "col": side_color(side)})
+			if sim.hs < 0:
+				toast("Rinforzi in arrivo tra %d s (%s)" % [secs, "attaccante" if side == 0 else "difensore"], side_color(side).lightened(0.3))
+			elif mine:
+				toast("Rinforzi in arrivo tra %d s: resisti!" % secs, Color(0.6, 1.0, 0.6))
+			else:
+				toast("Rinforzi NEMICI in arrivo tra %d s" % secs, Color(1.0, 0.7, 0.4))
+				alerts.append({"p": p, "t": 4.0})
+			_sfx("alert", 0.2)
+		"air":
+			pings.append({"p": p, "t": 0.0, "col": Color(1.0, 0.3, 0.2)})
+			if mine:
+				toast("Attacco aereo in arrivo tra %d s" % secs, Color(0.6, 1.0, 0.6))
+			else:
+				toast("ATTACCO AEREO NEMICO tra %d s: sposta le unità dalla zona segnata!" % secs if sim.hs >= 0 else "Attacco aereo annunciato tra %d s" % secs, Color(1.0, 0.45, 0.35))
+				float_text(p + Vector3(0, 3.0, 0), "ATTACCO AEREO", Color(1.0, 0.35, 0.25), true, 3.0)
+				alerts.append({"p": p, "t": 5.0})
+			_sfx("alert", 0.6)
+		"rout":
+			if sim.hs >= 0:
+				toast("Il nemico è allo sbando: le sue ultime posizioni sono note" if not mine else "Le tue forze sono allo sbando: il nemico conosce le tue posizioni", Color(0.6, 1.0, 0.6) if not mine else Color(1.0, 0.6, 0.45))
+		"obj_threat":
+			if sim.hs >= 0 and not mine:
+				toast("Il nemico è su %s: lo perdi tra %d s, contrattacca!" % [String(e.get("name", "un obiettivo")), secs], Color(1.0, 0.6, 0.45))
+				alerts.append({"p": p, "t": 4.0})
+				pings.append({"p": p, "t": 0.0, "col": Color(1.0, 0.5, 0.3)})
+				_sfx("alert", 0.3)
 
 func sel_has_art() -> bool:
 	for u in sim.sel_alive():

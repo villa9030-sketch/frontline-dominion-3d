@@ -6,6 +6,7 @@ extends SceneTree
 
 var D = null
 var BS = null
+var BR = null
 var GameS: Script
 var CombatS: Script
 var AIS: Script
@@ -84,7 +85,7 @@ func test_objectives() -> void:
 	var hq_ok := true
 	for o in b.objectives:
 		if o["kind"] == "hq" or o["kind"] == "building":
-			if int(o["owner"]) != 1 or float(o["x"]) < b.W * 0.6:
+			if int(o["owner"]) != 1 or float(o["x"]) < b.W * 0.55:
 				hq_ok = false
 	ok(hq_ok, "QG ed edifici partono del difensore, nella sua metà")
 	var lm: Dictionary = b.landmarks[0]
@@ -93,7 +94,30 @@ func test_objectives() -> void:
 	for o in b.objectives:
 		if int(o["home"]) == 1:
 			nh += 1
-	ok(b.objectives_held()[0] == 0 and b.objectives_held()[1] == nh and nh >= 3, "all'inizio QG, edifici e bunker sono del difensore, ponti/guadi neutri")
+	ok(b.objectives_held()[0] == 0 and b.objectives_held()[1] == nh and nh >= 2, "all'inizio QG ed edifici sono del difensore, gli altri neutri")
+	# notte 3: almeno 2 obiettivi nella fascia centrale (contesi), i neutri stanno tutti lì, ben separati
+	var central := 0
+	var neutral_ok := true
+	var sep_ok := true
+	for o in b.objectives:
+		var fx_: float = float(o["x"]) / b.W
+		if fx_ >= BR.OBJ_BAND[0] - 0.001 and fx_ <= BR.OBJ_BAND[1] + 0.001:
+			central += 1
+		elif int(o["home"]) < 0:
+			neutral_ok = false
+		for o2 in b.objectives:
+			if o != o2 and Vector2(o["x"], o["y"]).distance_to(Vector2(o2["x"], o2["y"])) < BR.OBJ_SEP - 1.0:
+				sep_ok = false
+	ok(central >= 2 and neutral_ok and sep_ok, "almeno 2 obiettivi nella fascia centrale (%d), neutri solo lì, distanti tra loro" % central)
+	# anche senza edifici né QG ci sono obiettivi contesi al centro, su ogni terreno
+	for tk in ["pianura", "foresta", "montagna", "deserto", "artico", "urbano"]:
+		var bt = BS.new(_setup(tk, {"inf": 4}, {"inf": 4}, 7))
+		var nc := 0
+		for o in bt.objectives:
+			if int(o["home"]) < 0 and float(o["x"]) >= bt.W * BR.OBJ_BAND[0] - 1.0 and float(o["x"]) <= bt.W * BR.OBJ_BAND[1] + 1.0:
+				nc += 1
+		ok(nc >= 2 and bt.objectives.size() <= BR.OBJ_MAX, "%s: %d obiettivi neutri al centro (su %d)" % [tk, nc, bt.objectives.size()])
+		bt.dispose()
 	b.dispose()
 	# campo pulito senza edifici né QG: nessun obiettivo (vale la vecchia regola di stallo)
 	var bc = BS.new(_setup("pianura", {"inf": 4}, {"inf": 4}, 3, {"clear": true}))
@@ -114,10 +138,16 @@ func test_capture_and_time() -> void:
 	var dinf := _side(b, 1, "inf")
 	_place(b, dinf, 300.0, 300.0, 40.0, PI)   # difensori lontani (nessuno nel raggio)
 	_place(b, infs, float(obj["x"]) - 60.0, float(obj["y"]), 40.0, 0.0)
-	_run(b, 30.0)
-	ok(int(obj["owner"]) == 1 and float(obj["hold"][0]) > 20.0, "dopo 30 s l'obiettivo è ancora del difensore, contatore avviato (%.0f s)" % float(obj["hold"][0]))
-	_run(b, 35.0)
-	ok(int(obj["owner"]) == 0, "dopo 65 s di presenza esclusiva l'attaccante conquista l'edificio")
+	var thr := 0
+	for i in 8:
+		b.step(0.25)
+		thr += b.fx.filter(func(e): return e["e"] == "announce" and e["kind"] == "obj_threat").size()
+		b.fx.clear()
+	_run(b, BR.OBJ_HOLD * 0.5 - 2.0)
+	ok(int(obj["owner"]) == 1 and float(obj["hold"][0]) > BR.OBJ_HOLD * 0.3, "a metà del tempo l'obiettivo è ancora del difensore, contatore avviato (%.0f s)" % float(obj["hold"][0]))
+	ok(thr == 1, "evento 'announce' obj_threat quando il nemico mette piede sull'obiettivo (%d)" % thr)
+	_run(b, BR.OBJ_HOLD * 0.5 + 5.0)
+	ok(int(obj["owner"]) == 0 and b.obj_flips == 1, "dopo %d s di presenza esclusiva l'attaccante conquista l'edificio" % int(BR.OBJ_HOLD))
 	var ev: Array = b.fx.filter(func(e): return e["e"] == "objective")
 	b.fx.clear()
 	# un difensore entra nel raggio: conteso, il contatore si azzera
@@ -176,6 +206,7 @@ func test_reinforcements_and_support() -> void:
 			north = false
 	ok(north, "entrano dal bordo dell'attaccante, nel terzo nord")
 	ok(b.fx.filter(func(e): return e["e"] == "reinf").size() == 1, "evento fx 'reinf'")
+	ok(b.fx.filter(func(e): return e["e"] == "announce" and e["kind"] == "reinf").size() == 1, "rinforzi annunciati prima dell'arrivo (evento 'announce')")
 	b.fx.clear()
 	var r: Dictionary = b.run_headless()
 	ok(D.total_units(r["attReinf"]) <= 4 and D.total_units(r["att"]) <= 8, "superstiti dei rinforzi separati dalla forza principale (%d / %d)" % [D.total_units(r["attReinf"]), D.total_units(r["att"])])
@@ -424,7 +455,7 @@ func test_save_v3() -> void:
 	g.terr[5]["silence"] = 2
 	g.intel["0:7"] = g.round + 1
 	var d: Dictionary = g.serialize()
-	ok(int(d["version"]) == 3 and d["opts"]["fog_mode"] == "light", "versione 3 con fog_mode")
+	ok(int(d["version"]) >= 3 and d["opts"]["fog_mode"] == "light", "versione ≥ 3 con fog_mode")   # v4 dalla notte 3 (TABELLONE)
 	var g2 = GameS.deserialize(JSON.parse_string(JSON.stringify(d)))
 	ok(g2 != null and g2.fog_mode == "light" and g2.fog, "ricaricato con nebbia leggera")
 	ok(int(g2.terr[3]["worn"]) == 2 and int(g2.terr[4]["decoy"]) == 1 and int(g2.terr[5]["silence"]) == 2 and g2.has_intel(0, 7), "logoramento, inganni e ricognizione salvati")
@@ -457,6 +488,7 @@ func _process(_delta: float) -> bool:
 	_ran = true
 	D = root.get_node_or_null("/root/Data")
 	BS = load("res://scripts/battle/battle_sim.gd")
+	BR = load("res://scripts/battle/battle_rules.gd")
 	GameS = load("res://scripts/core/game.gd")
 	CombatS = load("res://scripts/core/combat.gd")
 	print("== test_omogeneita ==")

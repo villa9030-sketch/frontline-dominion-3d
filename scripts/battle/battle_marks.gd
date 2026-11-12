@@ -40,6 +40,7 @@ var _rubble_mesh := {}
 var stats := {"craters": 0, "trees": 0, "buildings": 0, "collapsed": 0, "stamps": 0}
 var _rng := RandomNumberGenerator.new()
 var enabled := true
+var signs: Node3D                 # BattleSigns (notte 3)
 var _silent := false              # avanzamento rapido: niente particelle per i danni applicati
 
 func setup(b, w) -> void:
@@ -60,6 +61,12 @@ func setup(b, w) -> void:
 	_build_index()
 	if battle._demo:
 		print("[marks] distruttibili indicizzati: %d in %.1f ms" % [items.size(), (Time.get_ticks_usec() - t0) / 1000.0])
+	# notte 3: segni 3D dei contatti «?», della rivelazione e degli eventi annunciati (BattleSigns, autonomo)
+	var sg = load("res://scripts/battle/battle_signs.gd")
+	if sg != null and battle is Node:
+		signs = sg.new()
+		(battle as Node).add_child(signs)
+		signs.setup(battle)
 
 # ---------------------------------------------------------------------------- indice dei distruttibili
 func _build_index() -> void:

@@ -41,10 +41,25 @@ func _process(_dt: float) -> bool:
 			print("[flow] round ", round_i, " objects=", Performance.get_monitor(Performance.OBJECT_COUNT), " nodes=", Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
 			log_obj.append(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
 			main.menu_opts["faction"] = round_i % 4
-			check(bool(main.menu_opts.get("fog", false)), "nebbia attiva di default nel menu")
+			# notte 3: la nebbia predefinita è «nessuna»; nei round successivi del test si gioca con la nebbia leggera
+			if round_i == 0:
+				check(not bool(main.menu_opts.get("fog", true)) and String(main.menu_opts.get("fog_mode", "")) == "none", "nebbia spenta di default nel menu")
+			else:
+				main.menu_opts["fog"] = true
+				main.menu_opts["fog_mode"] = "light"
 			main.start_game(false)
 			assert(main.game != null)
-			if "fog" in main.game:
+			if round_i == 0:
+				check(not bool(main.game.fog) and String(main.game.fog_mode) == "none", "partita predefinita senza nebbia")
+				var far0 := _far_territory()
+				if far0 >= 0:
+					check(main.is_vis(far0) and main.gcall("visible_forces", [main.h(), far0], null) != null, "senza nebbia le forze si vedono ovunque")
+				main.hud.refresh(true)
+				check(main.game.mission_of(main.h()) is Dictionary and main.goal_text().find("ORDINE DEL COMANDO") >= 0 and main.hud.g_goal.visible, "ordine del comando nel riquadro ORDINI")
+				check(main.attacks_max() == 2 and main.attacks_left() == 2, "tregua iniziale: due attacchi per turno")
+				var ops_txt := _texts(main.hud)
+				check(ops_txt.find("Divisione falsa") < 0 and ops_txt.find("Silenzio radio") < 0, "carte inganno assenti senza nebbia")
+			elif "fog" in main.game:
 				check(bool(main.game.fog), "opts.fog arriva al nucleo")
 				# territorio lontano dal QG: deve risultare nella nebbia
 				var far := _far_territory()
@@ -124,7 +139,9 @@ func _process(_dt: float) -> bool:
 				var sent: int = D.total_units(main._force_sel)
 				check(sent == D.total_units(main.game.terr[pair[0]]["forces"]) - 1, "cursori: tutto tranne un'unità (%d)" % sent)
 				main.act("atk-auto")
-				check(main.modal_kind == "" and main.attack_used(), "attacco eseguito e risolto in automatico")
+				check(main.modal_kind == "" and main.attacked_any(), "attacco eseguito e risolto in automatico")
+				main.hud.refresh(true)
+				check(main.attacks_left() == 1 and not main.attack_used() and main.hud.g_main.text.find("Basta attacchi") >= 0, "tregua: resta un secondo attacco facoltativo (%s)" % main.hud.g_main.text)
 				print("[flow] esito: proprietario ", main.game.terr[pair[1]]["owner"], " toasts=", main._recent_toasts.size())
 			main.act("end-phase")
 			if main.phase_key() == "attack":
@@ -161,6 +178,34 @@ func _process(_dt: float) -> bool:
 				check(FileAccess.file_exists(main.SaveStore.path("auto", "sav")), "salvataggio automatico all'inizio del turno")
 				main.hud.refresh(true)
 				check(_texts(main.hud.turn_bar).find("TURNO %d" % main.round_n()) >= 0, "barra: nuovo numero di turno")
+				# notte 3: rapporto «Dall'ultimo turno» (righe cliccabili) e minacce annunciate
+				print("[flow] rapporto del round visibile=", main.hud.recap != null and main.hud.recap.visible)
+				main.hud.show_recap([{"text": "FO ammassa 12 unità in Polonia contro Germania (8 in difesa)", "kind": "threat", "terr": 17},
+					{"text": "CP conquista Indonesia", "kind": "info", "terr": 38}], 2)
+				check(main.hud.recap.visible and _texts(main.hud.recap).find("DALL'ULTIMO TURNO") >= 0 and _texts(main.hud.recap).find("altre 2 nel Registro") >= 0, "rapporto del round mostrato")
+				main.act("focus-terr", {"t": 17})
+				check(main.sel == 17, "clic su una riga del rapporto: territorio inquadrato")
+				main.act("recap-close")
+				check(not main.hud.recap.visible, "rapporto chiuso")
+				main.select(-1)
+				var foe := -1
+				var foe_t := -1
+				var my_t := -1
+				for t in main.gcall("territories_of", [main.h()], []):
+					for j in D.TERRITORIES[int(t)]["adj"]:
+						var o: int = int(main.game.terr[j]["owner"])
+						if o >= 0 and o != main.h():
+							foe = o; foe_t = j; my_t = int(t)
+				if foe >= 0:
+					main.game.set_intent(foe, foe_t, my_t)
+					main.refresh(true)
+					check(main.threats.size() == 1 and main.hud.threat_btn.visible and main.hud.threat_lbl.text.find("MINACCIA") >= 0, "minaccia annunciata nel pulsante rosso (%s)" % main.hud.threat_lbl.text)
+					check(main.recap_lines().size() >= 1 and String(main.recap_lines()[0]["kind"]) == "threat", "la minaccia apre il rapporto del round")
+					main.game.intents[foe] = null
+					main.refresh(true)
+					check(main.threats.is_empty() and not main.hud.threat_btn.visible, "minaccia tolta")
+				else:
+					print("[flow] (nessun confine con un giocatore: minaccia non provata)")
 				phase = 23; frame = 0
 			elif frame > 1500:
 				check(false, "i turni IA non finiscono (cur=%d fase=%s modal=%s)" % [main.cur_player(), main.phase_key(), main.modal_kind])

@@ -108,6 +108,7 @@ var _noise_img: Image         # rumore condiviso con lo shader (noise_tex): masc
 var far_lakes: Array = []     # laghi del paesaggio lontano: [X, Z, R, quota dell'acqua] (solo vista)
 var _glows: Array = []        # luci notturne a terra: [Vector3 pos, raggio, intensità, Color]
 var _glow_mat: ShaderMaterial
+var _bulb_mat: ShaderMaterial
 var _night_mat: ShaderMaterial
 
 static func sim_to_world(x: float, y: float) -> Vector2:
@@ -147,6 +148,9 @@ func build(s: BattleSim) -> void:
 	var shot: Node = (Engine.get_main_loop() as SceneTree).root.get_node_or_null("Shot") if Engine.get_main_loop() is SceneTree else null
 	_no_trees = shot != null and String(shot.call("arg", "trees", "1")) == "0"
 	if shot != null:
+		_tree_auto_lod = String(shot.call("arg", "treelod", "1")) != "0"
+		if String(shot.call("arg", "textwo", "")) != "":   # confronto: --textwo=0 una sola scala di texture, =1 due scale
+			_tex_two_min = 2.0 if String(shot.call("arg", "textwo", "")) == "0" else -1.0
 		var lod_arg := String(shot.call("arg", "lod", ""))
 		match lod_arg:
 			"hi": LOD_T = 1e9
@@ -1070,7 +1074,9 @@ func _add_instances(kind: String, list: Array, shadow := true) -> Array:
 		if not chunks.has(key):
 			chunks[key] = []
 		chunks[key].append(it)
-	var mesh: Mesh = BattleProps.tree_mesh(kind)
+	# notte 3: il modello completo porta i livelli di dettaglio automatici (ImporterMesh): tra ~150 m e LOD_T il motore
+	# disegna versioni alleggerite, blocco per blocco (lod_bias secondo la qualità, vedi set_density)
+	var mesh: Mesh = BattleProps.tree_mesh_lods(kind) if _tree_auto_lod else BattleProps.tree_mesh(kind)
 	var lod: Mesh = BattleProps.tree_lod_mesh(kind)
 	for key in chunks:
 		var items: Array = chunks[key]
@@ -1094,6 +1100,8 @@ func _add_instances(kind: String, list: Array, shadow := true) -> Array:
 			if lv == 0:
 				mi.visibility_range_end = LOD_T
 				mi.set_meta("lod_hi", true)
+				mi.lod_bias = _tree_bias
+				tree_hi.append(mi)
 			elif lv == 1:
 				mi.visibility_range_begin = LOD_T
 				mi.visibility_range_end = 1400.0
@@ -1112,6 +1120,10 @@ func _add_instances(kind: String, list: Array, shadow := true) -> Array:
 				deco_mms.append(mm)
 	return made
 
+var tree_hi: Array = []      # MultiMeshInstance3D del livello vicino degli alberi (lod_bias secondo la qualità)
+var _tree_bias := 0.35
+var _tex_two_min := 0.4     # densità oltre la quale il suolo mescola due scale di texture (qualità media e alta)
+var _tree_auto_lod := true   # --treelod=0: modello completo fino a LOD_T (confronto)
 var LOD_T := 480.0   # distanza (m, dal centro del blocco) oltre la quale gli alberi passano al modello a 20 triangoli (--lod=hi|lo per confronti)
 
 ## Distanza massima di disegno per un gruppo di alberi restituito da _add_instances (solo il livello lontano;
@@ -1694,9 +1706,14 @@ func _bind_photo_textures() -> void:
 func set_density(f: float) -> void:
 	if terrain_mat != null:
 		terrain_mat.set_shader_parameter("detail_k", 1.0 if f > 0.4 else 0.0)
-		terrain_mat.set_shader_parameter("tex_two", 1.0 if f > 0.4 else 0.0)
+		terrain_mat.set_shader_parameter("tex_two", 1.0 if f > _tex_two_min else 0.0)
 	for mm in grass_mms:
 		(mm as MultiMesh).visible_instance_count = int((mm as MultiMesh).instance_count * f)
+	# alberi: livelli di dettaglio automatici più aggressivi sulle qualità basse (1 = soglia del motore)
+	_tree_bias = 0.8 if f > 0.8 else (0.35 if f > 0.4 else 0.25)
+	for n in tree_hi:
+		if is_instance_valid(n):
+			(n as GeometryInstance3D).lod_bias = _tree_bias
 	for mm in deco_mms:
 		(mm as MultiMesh).visible_instance_count = int((mm as MultiMesh).instance_count * clampf(f * 1.4, 0.0, 1.0))
 
@@ -2447,7 +2464,7 @@ void fragment() {
 	float h = fract(sin(inst * 12.9898 + 7.1) * 43758.5453);
 	float on = step(h, 0.78);
 	vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.95, 0.9, 0.75), step(0.5, fract(h * 7.0)));
-	EMISSION = warm * 2.8 * night * win * on;
+	EMISSION = warm * 5.0 * night * win * on;
 }
 """
 const GLOW_SHADER := """
@@ -2456,14 +2473,57 @@ render_mode blend_add, unshaded, depth_draw_never, cull_disabled, shadows_disabl
 uniform float night = 0.0;
 void fragment() {
 	float d = length(UV - 0.5) * 2.0;
-	float a = pow(max(0.0, 1.0 - d), 2.4);
-	// da lontano (vista strategica) le chiazze restano leggibili: un po' più intense con la distanza
+	// alone largo e tenue + pozza di luce calda sotto il lampione
+	float a = pow(max(0.0, 1.0 - d), 2.2) * 0.75 + pow(max(0.0, 1.0 - d * 2.4), 2.0) * 0.9;
+	// da lontano (vista strategica) le chiazze restano leggibili: più intense con la distanza
 	float dc = length(VERTEX);
-	a *= 1.0 + smoothstep(300.0, 1200.0, dc) * 1.2;
-	ALBEDO = COLOR.rgb * a * night;
+	a *= 1.0 + smoothstep(250.0, 1200.0, dc) * 1.6;
+	ALBEDO = COLOR.rgb * a * night * 2.0;
 	ALPHA = a * night;
 }
 """
+## Punti luce (lampade dei lampioni, luci delle case): sprite sempre rivolti alla telecamera, mai più piccoli di ~2,5 px
+## (da lontano un paese è una manciata di punti luminosi), luminosi oltre 1 per il bagliore.
+const BULB_SHADER := """
+shader_type spatial;
+render_mode blend_add, unshaded, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled;
+uniform float night = 0.0;
+varying float fade;
+void vertex() {
+	vec3 c = (MODELVIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float dist = max(-c.z, 0.5);
+	float px = 2.0 * dist / (VIEWPORT_SIZE.y * PROJECTION_MATRIX[1][1]);   // metri per pixel a quella distanza
+	float r0 = length(MODEL_MATRIX[0].xyz);
+	float r = max(r0, px * 3.2);
+	fade = clamp(r0 / (px * 3.2), 0.4, 1.0);
+	POSITION = PROJECTION_MATRIX * vec4(c + vec3(VERTEX.x, VERTEX.z, 0.0) * r, 1.0);
+}
+void fragment() {
+	float d = length(UV - 0.5) * 2.0;
+	float a = pow(max(0.0, 1.0 - d), 3.0) + smoothstep(0.35, 0.0, d) * 1.5;
+	ALBEDO = COLOR.rgb * a * night * 2.6 * fade;
+	ALPHA = clamp(a, 0.0, 1.0) * night;
+}
+"""
+
+## Materiale delle strade a strisce (strade lontane, vie dei paesi): colore di vertice, e di notte si spengono come il suolo
+## (con la sola luce ambiente restavano chiare su un terreno quasi nero).
+var _road_mat: ShaderMaterial
+func road_material() -> ShaderMaterial:
+	if _road_mat == null:
+		var sh := Shader.new()
+		sh.code = "shader_type spatial;
+render_mode cull_disabled;
+uniform float night = 0.0;
+void fragment() {
+	ALBEDO = COLOR.rgb * mix(1.0, 0.16, night);
+	ROUGHNESS = 0.94;
+	SPECULAR = 0.2;
+}
+"
+		_road_mat = ShaderMaterial.new()
+		_road_mat.shader = sh
+	return _road_mat
 
 func _night_material() -> ShaderMaterial:
 	if _night_mat == null:
@@ -2474,12 +2534,15 @@ func _night_material() -> ShaderMaterial:
 	return _night_mat
 
 ## Registra una chiazza di luce a terra (lampione, casa, piazza) che si vede solo di notte.
-func add_glow(p: Vector2, r: float, k: float, col := Color(1.0, 0.8, 0.5)) -> void:
-	_glows.append([Vector3(p.x, height(p.x, p.y) + 0.25, p.y), r, k, col])
+## `bulb_h` > 0: anche un punto luce a quell'altezza (lampada del lampione, finestra): si vede da lontano.
+func add_glow(p: Vector2, r: float, k: float, col := Color(1.0, 0.8, 0.5), bulb_h := 0.0) -> void:
+	_glows.append([Vector3(p.x, height(p.x, p.y) + 0.25, p.y), r, k, col, bulb_h])
 
 ## Notte (BattleWeather): finestre accese e luci dei lampioni/paesi (k 0 = giorno).
 func set_night(k: float) -> void:
 	_night_material().set_shader_parameter("night", k)
+	if _road_mat != null:
+		_road_mat.set_shader_parameter("night", k)
 	if _glow_mat == null and k > 0.001 and not _glows.is_empty():
 		var sh := Shader.new()
 		sh.code = GLOW_SHADER
@@ -2505,8 +2568,43 @@ func set_night(k: float) -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		mi.visibility_range_end = 6000.0
 		add_child(mi)
+		# punti luce
+		var bulbs: Array = []
+		for g2 in _glows:
+			if (g2 as Array).size() > 4 and float(g2[4]) > 0.0:
+				bulbs.append(g2)
+		if not bulbs.is_empty():
+			var bsh := Shader.new()
+			bsh.code = BULB_SHADER
+			_bulb_mat = ShaderMaterial.new()
+			_bulb_mat.shader = bsh
+			var bq := PlaneMesh.new()
+			bq.size = Vector2(2.0, 2.0)
+			bq.material = _bulb_mat
+			var bm := MultiMesh.new()
+			bm.transform_format = MultiMesh.TRANSFORM_3D
+			bm.use_colors = true
+			bm.mesh = bq
+			bm.instance_count = bulbs.size()
+			for i in bulbs.size():
+				var g3: Array = bulbs[i]
+				var bh: float = g3[4]
+				var br := 0.8 if bh > 4.0 else 0.5
+				bm.set_instance_transform(i, Transform3D(Basis.IDENTITY.scaled(Vector3(br, br, br)), (g3[0] as Vector3) + Vector3(0, bh - 0.25, 0)))
+				var c3: Color = g3[3]
+				var kk: float = g3[2]
+				bm.set_instance_color(i, Color(c3.r * kk, c3.g * kk, c3.b * kk, 1.0))
+			var bi := MultiMeshInstance3D.new()
+			bi.name = "NightBulbs"
+			bi.multimesh = bm
+			bi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			bi.extra_cull_margin = 8.0
+			bi.visibility_range_end = 6000.0
+			add_child(bi)
 	if _glow_mat != null:
 		_glow_mat.set_shader_parameter("night", k)
+	if _bulb_mat != null:
+		_bulb_mat.set_shader_parameter("night", k)
 
 # ============================================================================ Fase 7 — servizi per vista e FX
 ## Da chiamare ogni frame: crateri, parametro "vista d'insieme" dello shader (carta tattica) e blocchi del suolo deformati.

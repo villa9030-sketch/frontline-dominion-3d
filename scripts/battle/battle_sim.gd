@@ -5,7 +5,7 @@ extends RefCounted
 ## imboscate, corazza frontale/laterale/posteriore, artiglieria a lunghissima gittata ma imprecisa. Regole in BattleRules,
 ## IA in BattleAI. La vista (Battle3D) legge `units`, `shells`, `obs`, `roads`, `blocks`… e consuma `fx` (eventi grafici).
 
-const K := 0.3              # scala del danno per colpo (Fase 5: ×2.9 rispetto al JS, battaglie più letali e brevi)
+const K := 0.18             # scala del danno per colpo (notte 3: era 0.3; il contatto è immediato, lo scontro deve durare 2–3 minuti)
 const MAX_SPRITES := 36     # oltre questo numero di unità per lato: sprite di gruppo
 const RETARGET := 0.4
 const LEASH := 300.0
@@ -17,7 +17,7 @@ const END_MSG := 2.0
 const STALL := 5.0
 const STALL_ATT := 1.1      # stallo/tempo: vince l'attaccante se la sua potenza supera questo multiplo di quella "trincerata" del difensore
 const STALL_COVER := 1.5    # ... in cui le unità del difensore in copertura contano ×1.5
-const NO_DMG_AI := 90.0
+const NO_DMG_AI := 60.0
 const NO_DMG_HUMAN := 180.0
 const MAX_TIME := 300.0        # = BattleRules.BATTLE_T: allo scadere decidono gli obiettivi (docs/omogeneita.md)
 const AUTO_MAX_TIME := 300.0   # tetto della risoluzione automatica (s di battaglia)
@@ -99,6 +99,11 @@ class Unit extends RefCounted:
 	# --- Fase 5: visibilità, copertura, imboscate
 	var spotted := [false, false]   # visibile al lato 0 / lato 1
 	var seen_once := false          # già avvistata dal lato umano (per fx "spotted".first)
+	## Notte 3 — contatto: POSIZIONE nota al lato 0 / lato 1 (gettone "?"); `spotted` = anche il TIPO è noto (identificata).
+	## Vale sempre spotted[si] ⇒ known[si]. `id_once[si]`: il lato l'ha già identificata almeno una volta (la vista può ricordare il tipo).
+	var known := [false, false]
+	var id_once := [false, false]
+	var known_once := false         # già comparsa come contatto al lato umano (per fx "contact")
 	var concealed := false          # nascosta dalla copertura (o dal fumo)
 	var conc_r := 0.0               # distanza massima di scoperta quando nascosta
 	var view := 0.0                 # raggio di vista attuale
@@ -115,6 +120,7 @@ class Unit extends RefCounted:
 	var rx := 0.0                   # IA: punto assegnato
 	var ry := 0.0
 	var rt := 0.0                   # IA: istante dell'assegnazione
+	var obj := -1                   # IA: indice dell'obiettivo assegnato (role "cap")
 	var reinf := false              # rinforzo arrivato da un territorio vicino (torna a casa a fine battaglia)
 	var escaped := false            # in ritirata ha raggiunto il proprio bordo: salvo (conta tra i superstiti)
 
@@ -205,6 +211,13 @@ var reinf: Array = [null, null]   # per lato: {forces, t, dir (-1 nord / +1 sud)
 var retreating := [false, false]  # il lato sta ripiegando verso il proprio bordo
 var escaped: Array = [{"main": {}, "reinf": {}}, {"main": {}, "reinf": {}}]   # unità salve (ritirata al bordo)
 var _obj_t := 0.0
+## Notte 3: linee di schieramento (x), eventi annunciati. `pending` = eventi futuri con conto alla rovescia per l'HUD:
+## {kind: "reinf"|"air", side, t (istante), x, y, n}; la sim li toglie quando accadono.
+var front_x := [1560.0, 3240.0]
+var pending: Array = []
+var _air_plan: Array = []         # attacchi aerei dell'IA annunciati {t, si, x, y}
+var obj_flips := 0                # cambi di possesso degli obiettivi (statistica)
+var rout := [false, false]        # lato allo sbando (< ROUT_FRAC delle unità iniziali): tutte le sue unità sono contatti noti
 ## Modalità veloce (risoluzione automatica): passo interno fino a AUTO_DT, meno calcoli di percorso.
 var fast := false
 ## Profilazione (solo test): microsecondi per sezione.
@@ -257,12 +270,14 @@ func _init(s: Dictionary) -> void:
 	for S in sides:
 		S["luck"] = clampf(1.0 + _mrng.randfn(0.0, BattleRules.LUCK), 0.75, 1.25)
 	sides[0]["luck"] = float(sides[0]["luck"]) * BattleRules.ATT_INITIATIVE
+	sides[1]["luck"] = float(sides[1]["luck"]) * float(BattleRules.DEF_TERRAIN.get(tkey, 1.0))
 	for i in 64:
 		shells.append(Shell.new())
 	var fo = def.get("fort", {})
 	if fo is Dictionary:
 		for k in fort:
 			fort[k] = clampi(int(fo.get(k, 0)), 0, 3)
+	front_x = [BattleRules.FRONT_X[0], W - BattleRules.FRONT_X[1]]
 	var nb := maxi(maxi(0, int(def.get("bunkers", 0))), [0, 2, 3, 5][fort["bunker"]])
 	bunker_pos = _bunker_spots(nb)
 	_gen_map()
@@ -427,7 +442,7 @@ func _bunker_spots(n: int) -> Array:
 	var cy := (TOP + BOTTOM) / 2.0
 	var sp := minf(560.0, (BOTTOM - TOP - 360.0) / maxf(1.0, n - 1))
 	for i in n:
-		out.append(Vector2(3450 + (i % 2) * 36, cy + (i - (n - 1) / 2.0) * sp))
+		out.append(Vector2(front_x[1] + 60.0 + (i % 2) * 36, cy + (i - (n - 1) / 2.0) * sp))
 	return out
 
 func coast(y: float) -> float:
@@ -603,7 +618,9 @@ func _gen_landmarks() -> void:
 	var prio := ["fabbrica", "aeroporto", "porto", "impianto", "caserma", "bunker"]
 	keys.sort_custom(func(a, b): return prio.find(a) < prio.find(b))
 	var cy := (TOP + BOTTOM) / 2.0
-	var spots := [Vector2(W - 1250.0, cy - 520.0), Vector2(W - 1250.0, cy + 520.0), Vector2(W - 800.0, cy), Vector2(W - 1500.0, cy)]
+	# notte 3: il primo edificio sta nella fascia centrale (lato del difensore): è conteso fin dall'inizio; gli altri dietro la linea
+	var sg := -1.0 if (seed_ & 1) == 0 else 1.0
+	var spots := [Vector2(W * 0.6, cy + sg * 520.0), Vector2(W - 1050.0, cy - sg * 520.0), Vector2(W - 800.0, cy), Vector2(W - 1250.0, cy + sg * 900.0)]
 	var n := 0
 	for k in keys:
 		if n >= spots.size():
@@ -636,62 +653,136 @@ func _obs_blocked_rect(x: float, y: float, w: float, h: float) -> bool:
 				return true
 	return false
 
-## Obiettivi dal contesto (docs/omogeneita.md §1): QG, edifici, ponti/guadi, altura, linea dei bunker. Al massimo OBJ_MAX.
+## Obiettivi dal contesto (docs/omogeneita.md §1, notte 3): al massimo OBJ_MAX, almeno 2 nella FASCIA CENTRALE (contesi).
+##  - QG (capitale) in fondo al campo del difensore; edifici del territorio: il primo nella fascia centrale (parte del
+##    difensore), il secondo dietro la linea (solo senza QG);
+##  - fascia centrale, neutri: ponti/guadi, altura, crocevia/strada, località del terreno (nord/sud/centro);
+##  - linea dei bunker se resta posto.
 func _gen_objectives() -> void:
 	objectives.clear()
-	if bool(setup.get("clear", false)) and not bool(setup.get("hq", false)) and landmarks.is_empty():
+	var clear: bool = bool(setup.get("clear", false))
+	if clear and not bool(setup.get("hq", false)) and landmarks.is_empty():
 		return
 	var cy := (TOP + BOTTOM) / 2.0
-	if bool(setup.get("hq", false)):
-		var hx := W - 620.0
+	var has_hq := bool(setup.get("hq", false))
+	if has_hq:
+		var hx := W - 700.0
 		if sea:
 			hx = maxf(hx, coast(cy) + 500.0)
 		_add_obj("hq", "hq", "Quartier generale", hx, cy, 1)
 	var nb := 0
 	for lm in landmarks:
-		if nb >= 2 or objectives.size() >= BattleRules.OBJ_MAX:
+		if nb >= (1 if has_hq else 2) or objectives.size() >= BattleRules.OBJ_MAX:
 			break
 		_add_obj("building", String(lm["key"]), String(lm["name"]), float(lm["x"]) + float(lm["w"]) / 2.0, float(lm["y"]) + float(lm["h"]) / 2.0, 1)
 		nb += 1
-	if relief != null:
-		var xs: Array = []
-		for rv in relief.rivers:
-			for xg in rv.get("xings", []):
-				xs.append(xg)
-		# i più vicini al centro del campo
-		xs.sort_custom(func(a, b): return absf(float(a["y"]) - cy) < absf(float(b["y"]) - cy))
-		var nx := 0
-		for xg in xs:
-			if nx >= 2 or objectives.size() >= BattleRules.OBJ_MAX:
-				break
-			var kind := "bridge" if String(xg["k"]) == "bridge" else "ford"
-			var x := float(xg["x"])
-			_add_obj(kind, kind, "Ponte" if kind == "bridge" else "Guado", x, float(xg["y"]), _home_of(x))
-			nx += 1
-		if relief.has_relief() and objectives.size() < BattleRules.OBJ_MAX:
-			var best := Vector3(-1e9, 0, 0)
-			for j in range(2, 14):
-				for i in range(3, 29):
-					var x: float = W * i / 32.0
-					var y: float = TOP + (BOTTOM - TOP) * j / 16.0
-					if sea and x < coast(y) + 200.0:
-						continue
-					var h := relief.height(x, y)
-					if h > best.x:
-						var far := true
-						for o in objectives:
-							if Vector2(o["x"], o["y"]).distance_to(Vector2(x, y)) < W * 0.18:
-								far = false
-						if far:
+	if not clear:
+		var x0: float = W * BattleRules.OBJ_BAND[0]
+		var x1: float = W * BattleRules.OBJ_BAND[1]
+		var cands: Array = []   # [kind, key, nome, x, y]
+		if relief != null:
+			var xs: Array = []
+			for rv in relief.rivers:
+				for xg in rv.get("xings", []):
+					if float(xg["x"]) >= x0 and float(xg["x"]) <= x1:
+						xs.append(xg)
+			xs.sort_custom(func(a, b): return absf(float(a["y"]) - cy) < absf(float(b["y"]) - cy))
+			for k in mini(2, xs.size()):
+				var kind := "bridge" if String(xs[k]["k"]) == "bridge" else "ford"
+				cands.append([kind, kind, "Ponte" if kind == "bridge" else "Guado", float(xs[k]["x"]), float(xs[k]["y"])])
+			if relief.has_relief():
+				var best := Vector3(-1e9, 0, 0)
+				for j in range(2, 14):
+					for i in range(14, 20):
+						var x: float = W * i / 32.0
+						var y: float = TOP + (BOTTOM - TOP) * j / 16.0
+						var h := relief.height(x, y)
+						if h > best.x and not _obs_hit(x, y, 30.0):
 							best = Vector3(h, x, y)
-			if best.x > -1e8 and best.x >= relief.hmin + BattleRules.OBJ_HILL_MIN:
-				_add_obj("hill", "hill", "Quota %d" % int(round(best.x + 100.0)), best.y, best.z, _home_of(best.y))
+				if best.x > -1e8 and best.x >= relief.hmin + BattleRules.OBJ_HILL_MIN:
+					cands.append(["hill", "hill", "Quota %d" % int(round(best.x + 100.0)), best.y, best.z])
+		if tkey == "urbano":
+			# piazze (isolati a parco) più vicine al centro, a nord e a sud
+			for sgn in [-1.0, 1.0, 0.0]:
+				var tp := Vector2(W * BattleRules.OBJ_MID, cy + sgn * 560.0)
+				var bb = null
+				var bd := 1e18
+				for blk in blocks:
+					var c := Vector2(float(blk["x"]) + float(blk["w"]) / 2.0, float(blk["y"]) + float(blk["h"]) / 2.0)
+					if c.x < x0 or c.x > x1:
+						continue
+					var d := c.distance_squared_to(tp) * (1.0 if bool(blk["park"]) else 6.0)
+					if d < bd:
+						bd = d; bb = blk
+				if bb != null:
+					var px: float = float(bb["x"]) + float(bb["w"]) / 2.0
+					var py: float = float(bb["y"]) + float(bb["h"]) / 2.0
+					if not bool(bb["park"]):
+						px = float(bb["x"]) - 30.0; py = float(bb["y"]) - 30.0   # incrocio accanto all'isolato
+					cands.append(["site", "piazza", ("Piazza" if bool(bb["park"]) else "Incrocio") + [" nord", " centrale", " sud"][int(sgn) + 1], px, py])
+		else:
+			if not roads.is_empty():
+				var rp := _road_point(roads[0], W * BattleRules.OBJ_MID)
+				var nm := "Strada maestra"
+				if roads.size() > 1:
+					# crocevia: dove la seconda strada taglia la prima
+					var bq := Vector2.INF
+					var bdd := 1e18
+					for q in roads[1]:
+						var ry := _road_point(roads[0], q.x).y
+						if absf(q.y - ry) < bdd:
+							bdd = absf(q.y - ry); bq = Vector2(q.x, ry)
+					if bq.x >= x0 and bq.x <= x1:
+						rp = bq; nm = "Crocevia"
+				cands.append(["road", "road", nm, rp.x, rp.y])
+			var gname: String = {"pianura": "Casale", "foresta": "Radura", "montagna": "Sella", "deserto": "Pozzo", "artico": "Rifugio"}.get(tkey, "Località")
+			for sgn in [-1.0, 1.0, 0.0]:
+				var gp := _free_point(W * BattleRules.OBJ_MID + (_mrng.randf() - 0.5) * 240.0, cy + sgn * 640.0)
+				cands.append(["site", "site", gname + [" nord", " centrale", " sud"][int(sgn) + 1], gp.x, gp.y])
+		var want := clampi(BattleRules.OBJ_MAX - objectives.size(), 1, 3)
+		var added := 0
+		for c in cands:
+			if added >= want or objectives.size() >= BattleRules.OBJ_MAX:
+				break
+			var okc := true
+			for o in objectives:
+				if Vector2(o["x"], o["y"]).distance_to(Vector2(c[3], c[4])) < BattleRules.OBJ_SEP:
+					okc = false
+					break
+			if not okc:
+				continue
+			_add_obj(c[0], c[1], c[2], c[3], c[4], -1)
+			added += 1
 	if not bunker_pos.is_empty() and objectives.size() < BattleRules.OBJ_MAX:
 		var bx := 0.0
 		var by := 0.0
-		for b in bunker_pos:
-			bx += b.x; by += b.y
+		for bk in bunker_pos:
+			bx += bk.x; by += bk.y
 		_add_obj("bunker", "bunker", "Linea dei bunker", bx / bunker_pos.size(), by / bunker_pos.size(), 1)
+
+## Punto della strada (polilinea ordinata per x) alla x data.
+func _road_point(road: Array, x: float) -> Vector2:
+	for i in road.size() - 1:
+		var a: Vector2 = road[i]
+		var b: Vector2 = road[i + 1]
+		if x >= a.x and x <= b.x and b.x > a.x:
+			return a.lerp(b, (x - a.x) / (b.x - a.x))
+	return Vector2(x, (TOP + BOTTOM) / 2.0)
+
+## Punto percorribile vicino a (x, y) (fuori da rocce/edifici).
+func _free_point(x: float, y: float) -> Vector2:
+	x = clampf(x, 200.0, W - 200.0)
+	y = clampf(y, TOP + 200.0, BOTTOM - 200.0)
+	if not _obs_hit(x, y, 40.0):
+		return Vector2(x, y)
+	for ring in [120.0, 240.0, 360.0]:
+		for k in 8:
+			var a := k * TAU / 8.0
+			var px := clampf(x + cos(a) * ring, 200.0, W - 200.0)
+			var py := clampf(y + sin(a) * ring, TOP + 200.0, BOTTOM - 200.0)
+			if not _obs_hit(px, py, 40.0):
+				return Vector2(px, py)
+	return Vector2(x, y)
 
 ## Chi "possiede" all'inizio un punto: nella metà del difensore il difensore, altrimenti neutro.
 func _home_of(x: float) -> int:
@@ -728,10 +819,14 @@ func _upd_objectives(dt: float) -> void:
 				if int(o["owner"]) == si:
 					hold[si] = 0.0
 				else:
+					if hold[si] <= 0.0 and emit_fx and int(o["owner"]) == 1 - si:
+						# notte 3: il nemico ha messo piede su un obiettivo tenuto dall'altro lato (avviso con conto alla rovescia)
+						fx.append({"e": "announce", "kind": "obj_threat", "side": si, "name": o["name"], "x": ox, "y": oy, "t": BattleRules.OBJ_HOLD})
 					hold[si] += dt
 					if hold[si] >= BattleRules.OBJ_HOLD:
 						o["owner"] = si
 						hold[si] = 0.0
+						obj_flips += 1
 						if emit_fx:
 							fx.append({"e": "objective", "name": o["name"], "side": si, "x": ox, "y": oy, "kind": o["kind"]})
 
@@ -759,7 +854,17 @@ func _time_winner() -> String:
 func _upd_reinf() -> void:
 	for si in 2:
 		var r = reinf[si]
-		if r == null or bool(r["arrived"]) or time < float(r["t"]):
+		if r == null or bool(r["arrived"]):
+			continue
+		if not bool(r.get("warned", false)) and time >= float(r["t"]) - BattleRules.WARN_T:
+			# notte 3: rinforzi annunciati con conto alla rovescia (evento "announce", `pending`)
+			r["warned"] = true
+			var wx := 90.0 if si == 0 else W - 90.0
+			var wy: float = (TOP + 420.0) if int(r["dir"]) < 0 else (BOTTOM - 420.0)
+			pending.append({"kind": "reinf", "side": si, "t": float(r["t"]), "x": wx, "y": wy, "n": Data.total_units(r["forces"])})
+			if emit_fx:
+				fx.append({"e": "announce", "kind": "reinf", "side": si, "x": wx, "y": wy, "t": maxf(0.0, float(r["t"]) - time), "n": Data.total_units(r["forces"])})
+		if time < float(r["t"]):
 			continue
 		r["arrived"] = true
 		var f: Dictionary = r["forces"]
@@ -788,7 +893,7 @@ func _upd_reinf() -> void:
 			u.ax = u.x; u.ay = u.y
 			_elist[si].append(u)
 			# verso il fronte: il difensore raggiunge la propria linea, l'attaccante avanza sul campo
-			var fx_ := (W - 1150.0 - 300.0) if si == 1 else 1900.0
+			var fx_: float = (front_x[1] - 300.0) if si == 1 else W * 0.45
 			if si == 1:
 				u.role = "post"; u.rx = fx_; u.ry = u.y
 			order_unit(u, AMOVE, fx_, u.y, null)
@@ -1044,7 +1149,7 @@ func in_trench(x: float, y: float) -> bool:
 ## Trincee e campi minati del difensore (livelli 0..3 di setup.def.fort), nella sua metà del campo.
 func _gen_fort() -> void:
 	var rng := _mrng
-	var F := W - 1150.0
+	var F: float = front_x[1] + 200.0
 	for i in int(fort["trench"]):
 		var x := F - 220.0 - i * 330.0 + (rng.randf() - 0.5) * 60.0
 		var y := TOP + 180.0
@@ -1066,7 +1171,7 @@ func _gen_fort() -> void:
 		var best := Vector2.ZERO
 		var bs := 1e18
 		for c in 8:
-			var px := F - 450.0 - rng.randf() * 1100.0
+			var px := maxf(front_x[0] + 380.0, F - 450.0 - rng.randf() * 1100.0)
 			var py := TOP + 200.0 + rng.randf() * (BOTTOM - TOP - 400.0)
 			if _obs_hit(px, py, 40.0):
 				continue
@@ -1132,7 +1237,7 @@ func _spawn() -> void:
 		var g := int(ceil(float(tot) / MAX_SPRITES)) if tot > MAX_SPRITES else 1
 		S["g"] = g
 		var dir := 1 if si == 0 else -1
-		var front := 1150.0 if si == 0 else W - 1150.0
+		var front: float = front_x[si]
 		for k in Data.UNIT_KEYS:
 			var n := int(f.get(k, 0))
 			if n <= 0:
@@ -1264,6 +1369,13 @@ func _upd_vis(force := false) -> void:
 		u.concealed = conc > 0
 	var hv := hs if hs >= 0 else 0
 	var rel: bool = relief != null and relief.has_relief()
+	# notte 3 — allo sbando: un lato ridotto sotto ROUT_FRAC delle unità iniziali non riesce più a nascondersi
+	# (niente caccia agli ultimi superstiti: le loro posizioni sono note ovunque)
+	for si in 2:
+		if not rout[si] and init[si] > 0 and time > 1.0 and float(cnt[si]) < float(init[si]) * BattleRules.ROUT_FRAC:
+			rout[si] = true
+			if emit_fx:
+				fx.append({"e": "announce", "kind": "rout", "side": si, "x": W * 0.5, "y": H * 0.5, "t": 0.0})
 	for si in 2:
 		var vx := PackedFloat32Array()
 		var vy := PackedFloat32Array()
@@ -1303,11 +1415,14 @@ func _upd_vis(force := false) -> void:
 					if gg and vh[k] > he:
 						r *= BattleRelief.view_mul(vh[k] - he)   # posizione dominante: si vede più lontano verso il basso
 					if e.reveal_t > 0:
-						# la fanteria che spara da copertura si vede solo da vicino; i cannoni dei mezzi si vedono da lontano
-						if e.type == "inf":
-							r = minf(r * BattleRules.REVEAL_OPEN, BattleRules.REVEAL_COVER[e.cover]) if e.cover > 0 else r * BattleRules.REVEAL_OPEN
-						else:
-							r = maxf(r * BattleRules.REVEAL_OPEN, BattleRules.REVEAL_GUN)
+						# notte 3: chi spara si rivela (lampo di bocca) — identificato entro REVEAL_K × la propria gittata, senza linea di vista
+						# (la fanteria che spara da una copertura resta un «?» finché non ci si avvicina a REVEAL_COVER: va stanata)
+						var rr: float = maxf(BattleRules.REVEAL_MIN, e.range_ * BattleRules.REVEAL_K)
+						if e.type == "inf" and e.cover > 0:
+							rr = BattleRules.REVEAL_COVER[e.cover]
+						if dx * dx + dy * dy <= rr * rr:
+							vis = true
+							break
 					elif e.conc_r > 0:
 						r = minf(r, e.conc_r * (BattleRules.RECON_CONCEAL if rc[k] else 1.0))
 				if dx * dx + dy * dy <= r * r:
@@ -1316,17 +1431,41 @@ func _upd_vis(force := false) -> void:
 						continue
 					vis = true
 					break
+			# notte 3 — contatto (gettone "?"): posizione nota se è identificata, se è un velivolo, se è allo scoperto /
+			# in movimento / ha appena sparato (ovunque), oppure — ferma in copertura — entro CONTACT_R da una nostra unità
+			var kn: bool = vis or e.air or e.conc_r <= 0.0 or rout[e.side]
+			if not kn:
+				var cr: float = BattleRules.CONTACT_R * weather_view_mul * lit_k
+				var cr2 := cr * cr
+				var crr := cr * BattleRules.CONTACT_RECON
+				var crr2 := crr * crr
+				for k in nv:
+					var dx2: float = e.x - vx[k]
+					var dy2: float = e.y - vy[k]
+					if dx2 * dx2 + dy2 * dy2 <= (crr2 if rc[k] else cr2):
+						kn = true
+						break
 			var was: bool = e.spotted[si]
 			if vis != was or force:
 				e.spotted[si] = vis
 				if vis:
-					_drop_ghost(si, e.id)
+					e.id_once[si] = true
 					if si == hv and not was and emit_fx and not force:
 						fx.append({"e": "spotted", "u": e, "id": e.id, "side": e.side, "x": e.x, "y": e.y, "first": not e.seen_once})
 					if si == hv:
 						e.seen_once = true
-				elif was:
-					ghosts[si].append({"id": e.id, "type": e.type, "x": e.x, "y": e.y, "t": time, "g": e.g})
+			var was_k: bool = e.known[si]
+			if kn != was_k or force:
+				e.known[si] = kn
+				if kn:
+					_drop_ghost(si, e.id)
+					if si == hv and not vis and emit_fx and not force and not e.known_once:
+						fx.append({"e": "contact", "u": e, "id": e.id, "side": e.side, "x": e.x, "y": e.y})
+					if si == hv:
+						e.known_once = true
+				elif was_k:
+					# contatto perso: resta il fantasma dell'ultima posizione (tipo noto solo se era stata identificata)
+					ghosts[si].append({"id": e.id, "type": e.type if e.id_once[si] else "", "x": e.x, "y": e.y, "t": time, "g": e.g})
 	# campi minati: l'attaccante li scopre da vicino (ricognizione da più lontano)
 	for i in mines.size():
 		var m: Dictionary = mines[i]
@@ -1406,6 +1545,8 @@ func step(dt: float) -> void:
 		_upd_salvos()
 	if not strikes.is_empty():
 		_upd_strikes()
+	if not pending.is_empty() or not _air_plan.is_empty():
+		_upd_pending()
 	if not mines.is_empty():
 		_upd_mines(dt)
 	_elist[0].clear()
@@ -1471,14 +1612,14 @@ func _upd_unit(u: Unit, dt: float) -> void:
 	if u.ambush_t > 0: u.ambush_t -= dt
 	u.ret_t -= dt * (0.3 if fast else 1.0)
 	var si := u.side
-	if u.tgt != null and (u.tgt.dead or not u.tgt.spotted[si]):
+	if u.tgt != null and (u.tgt.dead or not (u.tgt.spotted[si] or (u.type == "art" and u.tgt.known[si]))):
 		u.tgt = null
 		if u.ret_t > 0.05:
 			u.ret_t = 0.05
 	if u.order == ATTACK:
 		if u.otgt == null or u.otgt.dead:
 			u.order = IDLE; u.otgt = null; u.ax = u.x; u.ay = u.y
-		elif not u.otgt.spotted[si]:
+		elif not (u.otgt.spotted[si] or (u.type == "art" and u.otgt.known[si])):
 			# bersaglio perso di vista: attacco in movimento verso l'ultima posizione nota
 			var lx: float = u.otgt.x
 			var ly: float = u.otgt.y
@@ -1610,9 +1751,12 @@ func _find_target(u: Unit, rad: float) -> Unit:
 	var si := u.side
 	var los_chk: bool = not u.air and u.type != "art" and relief != null and relief.has_relief()
 	for e in _elist[1 - si]:
-		if e.dead or not e.spotted[si]:
+		if e.dead:
 			continue
-		var m: float = M.get(e.type, 0.0)
+		var ident: bool = e.spotted[si]
+		if not ident and not (u.type == "art" and e.known[si] and not e.air):
+			continue   # fuoco diretto solo sugli identificati; l'artiglieria batte anche i contatti "?" (meno precisa)
+		var m: float = M.get(e.type, 0.0) if ident else 0.5
 		if m <= 0:
 			continue
 		var dx: float = e.x - u.x
@@ -1630,8 +1774,10 @@ func _find_target(u: Unit, rad: float) -> Unit:
 				me *= BattleRules.COVER_INF[e.cover] * (BattleRules.VEH_VS_COVER_INF if (u.type == "tank" or u.type == "aa") else 1.0)
 			else:
 				me *= BattleRules.COVER_VEH[e.cover]
-		var thr: float = e.M.get(u.type, 0.0)
-		if e.type == "inf" and BattleRules.ARMORED.has(u.type) and d < BattleRules.AT_RANGE + u.r + 60.0:
+		var thr: float = e.M.get(u.type, 0.0) if ident else 0.0
+		if not ident:
+			me = 0.5   # contatto: tipo ignoto, vale come un bersaglio qualunque
+		if ident and e.type == "inf" and BattleRules.ARMORED.has(u.type) and d < BattleRules.AT_RANGE + u.r + 60.0:
 			thr *= BattleRules.AT_COVER_MUL   # fanteria anticarro vicina: minaccia mortale
 		var s: float = me * (1.0 + 2.0 * thr) * (1.3 - 0.3 * e.hp / e.hp_max) / (1 + d / (u.range_ * 1.5))
 		if e.stat: s *= 0.55
@@ -2015,12 +2161,14 @@ func _start_shot(u: Unit) -> bool:
 	return amb
 
 func _fire(u: Unit, t: Unit, d: float) -> void:
-	_start_shot(u)
+	var amb := _start_shot(u)
 	var base := u.mul * alive(u)
 	if u.type == "art":
 		var sc := BattleRules.scatter(d)
+		if not t.spotted[u.side]:
+			sc *= BattleRules.CONTACT_SCATTER   # contatto non identificato: tiro sulla posizione stimata
 		# mira dove il bersaglio È (nessun anticipo): con 2–5 s di volo l'artiglieria punisce chi sta fermo, non chi manovra
-		_art_shell(u, t.x, t.y, d, sc, base * BattleRules.ART_DMG)
+		_art_shell(u, t.x, t.y, d, sc, base * BattleRules.ART_DMG, true)
 		return
 	var dmg := base * float(u.M.get(t.type, 0.0))
 	# precisione: cala con la distanza e sparando in movimento
@@ -2048,9 +2196,8 @@ func _fire(u: Unit, t: Unit, d: float) -> void:
 	if u.type == "inf" and BattleRules.ARMORED.has(t.type) and d < BattleRules.AT_RANGE + t.r:
 		dmg *= BattleRules.AT_COVER_MUL if u.cover > 0 else BattleRules.AT_OPEN_MUL
 		rocket = true
-	var amb := u.ambush_t > 0
 	if amb:
-		dmg *= BattleRules.AMBUSH_MUL
+		dmg *= BattleRules.AMBUSH_MUL   # notte 3: solo il primo colpo da nascosta
 	if t.smoke_t > 0:
 		dmg *= SMOKE_MUL
 	if prof_on:
@@ -2067,7 +2214,7 @@ func _fire_area(u: Unit, x: float, y: float, d: float) -> void:
 	_start_shot(u)
 	_art_shell(u, x, y, d, BattleRules.scatter(d) * BattleRules.AREA_SCATTER, u.mul * alive(u) * BattleRules.ART_DMG)
 
-func _art_shell(u: Unit, x: float, y: float, d: float, sc: float, base: float) -> void:
+func _art_shell(u: Unit, x: float, y: float, d: float, sc: float, base: float, aimed := false) -> void:
 	var a := _rng.randf() * TAU
 	var rr := sqrt(_rng.randf()) * sc
 	var ca := cos(u.tur)
@@ -2076,7 +2223,7 @@ func _art_shell(u: Unit, x: float, y: float, d: float, sc: float, base: float) -
 	var s := _shell(u.side, u.x + ca * u.r * 1.4, u.y + sa * u.r * 1.4, x + cos(a) * rr, y + sin(a) * rr, base, u.splash, TT, 30 + d * 0.12, false)
 	s.scatter = sc
 	if emit_fx:
-		fx.append({"e": "fire", "u": u, "art": true})
+		fx.append({"e": "fire", "u": u, "art": true, "aimed": aimed})   # aimed: tiro su un'unità nota (non fuoco d'area alla cieca)
 
 func _damage(t: Unit, dmg: float) -> void:
 	if t.dead or not (dmg > 0):
@@ -2207,6 +2354,32 @@ func air_strike(si: int, x: float, y: float) -> bool:
 	if emit_fx:
 		fx.append({"e": "airstrike", "side": si, "x": x, "y": y, "dir": dir, "delay": AIR_DELAY})
 	return true
+
+## Notte 3 — attacco aereo ANNUNCIATO (IA): prenota l'uso, avvisa (evento "announce" kind "air", `pending`) e sgancia
+## dopo AI_AIR_WARN s: chi lo subisce ha il tempo di spostarsi.
+func air_strike_announced(si: int, x: float, y: float) -> bool:
+	var S: Dictionary = sides[si]
+	if int(S["air_uses"]) <= 0 or ending != null or done:
+		return false
+	S["air_uses"] = int(S["air_uses"]) - 1
+	x = clampf(x, 10, W - 10)
+	y = clampf(y, TOP + 10, BOTTOM - 10)
+	_air_plan.append({"t": time + BattleRules.AI_AIR_WARN - AIR_DELAY, "si": si, "x": x, "y": y})
+	pending.append({"kind": "air", "side": si, "t": time + BattleRules.AI_AIR_WARN, "x": x, "y": y, "n": AIR_BOMBS})
+	if emit_fx:
+		fx.append({"e": "announce", "kind": "air", "side": si, "x": x, "y": y, "t": BattleRules.AI_AIR_WARN, "r": AIR_R})
+	return true
+
+func _upd_pending() -> void:
+	for i in range(_air_plan.size() - 1, -1, -1):
+		var ap: Dictionary = _air_plan[i]
+		if time >= float(ap["t"]):
+			_air_plan.remove_at(i)
+			sides[ap["si"]]["air_uses"] = int(sides[ap["si"]]["air_uses"]) + 1
+			air_strike(int(ap["si"]), float(ap["x"]), float(ap["y"]))
+	for i in range(pending.size() - 1, -1, -1):
+		if time >= float(pending[i]["t"]):
+			pending.remove_at(i)
 
 func _upd_strikes() -> void:
 	var J: Dictionary = Data.UNITS["jet"]
@@ -2347,7 +2520,7 @@ func _end(winner: String, why: String) -> void:
 ## Risultato: superstiti della forza principale (att/def), dei rinforzi (attReinf/defReinf), obiettivi tenuti.
 func _make_result(winner: String, retreated: bool) -> Dictionary:
 	return {"att": _survivors(0), "def": _survivors(1), "winner": winner, "retreated": retreated, "autoRest": false,
-		"attReinf": _survivors(0, true), "defReinf": _survivors(1, true), "objectives": objectives_held(), "time": time,
+		"attReinf": _survivors(0, true), "defReinf": _survivors(1, true), "objectives": objectives_held(), "time": time, "flips": obj_flips,
 		"why": String(ending["why"]) if ending != null else ""}
 
 ## Ritirata ordinata (solo attaccante umano): i reparti ripiegano al proprio bordo; chi lo raggiunge è salvo, chi resta
@@ -2395,7 +2568,7 @@ func _cluster(si: int):
 	var bc := 2.0
 	var k := 0
 	for e in units:
-		if e.dead or e.side != E or e.air or not e.spotted[si]:
+		if e.dead or e.side != E or e.air or not e.known[si]:
 			continue
 		k += 1
 		if ((k - 1) % 2) == 1 and units.size() > 80:
@@ -2523,9 +2696,11 @@ func unit_at(x: float, y: float, side: int = -1) -> Unit:
 	for u in units:
 		if u.dead or (side >= 0 and u.side != side):
 			continue
-		if hs >= 0 and u.side != hs and not u.spotted[hs]:
+		if hs >= 0 and u.side != hs and not u.known[hs]:
 			continue
 		var d: float = Vector2(u.x - x, u.y - y).length() - u.r - (2.0 if u.air else 0.0)
+		if hs >= 0 and u.side != hs and not u.spotted[hs]:
+			d -= 34.0   # gettone "?": bersaglio più largo (lo si indica all'artiglieria)
 		if d < 6 and d < bd:
 			bd = d; best = u
 	return best
@@ -2547,8 +2722,17 @@ func order_attack(e: Unit) -> void:
 	if own.is_empty() or e == null or e.dead:
 		return
 	if hs >= 0 and e.side != hs and not e.spotted[hs]:
-		# nemico non visibile: attacco in movimento verso il punto
-		formation(own, e.x, e.y, AMOVE)
+		# nemico non identificato: attacco in movimento verso il punto; l'artiglieria può battere un contatto "?"
+		var movers := own
+		if e.known[hs] and not e.air:
+			movers = []
+			for u in own:
+				if u.type == "art":
+					order_unit(u, ATTACK, e.x, e.y, e)
+				else:
+					movers.append(u)
+		if not movers.is_empty():
+			formation(movers, e.x, e.y, AMOVE)
 		marker = {"x": e.x, "y": e.y, "t": 0.6, "kind": "amove"}
 		return
 	var other := []
@@ -2635,7 +2819,7 @@ func human_barrage(x: float, y: float) -> bool:
 ## Zona di schieramento iniziale del lato `si` (piano sim).
 func deploy_zone(si: int) -> Rect2:
 	if si == 0:
-		return Rect2(120, TOP + 42, 1680, BOTTOM - TOP - 84)
+		return Rect2(120, TOP + 42, front_x[0] + 250.0 - 120.0, BOTTOM - TOP - 84)
 	# il difensore si prepara in tutta la propria metà del campo (boschi, città, trincee)
 	return Rect2(W * 0.5 + 150, TOP + 42, W * 0.5 - 270, BOTTOM - TOP - 84)
 

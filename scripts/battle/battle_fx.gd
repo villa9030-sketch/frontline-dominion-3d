@@ -149,8 +149,11 @@ void fragment() {
 }
 """
 
+var _dbg_off := false
+
 func setup(cam: Camera3D, noise_tex: Texture2D, sun_dir: Vector3) -> void:
 	camera = cam
+	_dbg_off = "--fxoff=1" in OS.get_cmdline_user_args()
 	_g.resize(GLOW_N * ST); _gc.resize(GLOW_N)
 	_s.resize(SMOKE_N * ST); _sc.resize(SMOKE_N)
 	_gbuf.resize(GLOW_N * 20)
@@ -502,7 +505,7 @@ func _fill(A: PackedFloat32Array, C: PackedColorArray, n: int, buf: PackedFloat3
 		buf[b + 12] = c.r; buf[b + 13] = c.g; buf[b + 14] = c.b; buf[b + 15] = c.a
 		buf[b + 16] = age; buf[b + 17] = A[o + 10]; buf[b + 18] = A[o + 11]; buf[b + 19] = 0.0
 	mm.buffer = buf
-	mm.visible_instance_count = n
+	mm.visible_instance_count = 0 if _dbg_off else n   # --fxoff=1: misura del costo di fumo e bagliori
 
 func _draw_tracers(dt: float) -> void:
 	_im.clear_surfaces()

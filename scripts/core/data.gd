@@ -61,7 +61,35 @@ const TURNS = {
 const TURN_SECS := 45.0
 ## Regole a turni
 const TURN_RULES = {"truce_rounds": 2, "occupation": 2, "regroup": 1, "sabotage": 2, "militia": 2, "garrison": 1,
-	"pact_rounds": 5, "pact_cd": 3, "market_recover": 0.15, "round_cap": 120}
+	"pact_rounds": 5, "pact_cd": 3, "market_recover": 0.15, "round_cap": 120,
+	"attacks": 1, "truce_attacks": 2}   # attacchi per turno; durante la tregua iniziale (solo neutrali attaccabili) 2: avvio più rapido
+
+## Notte 3 — ritmo del tabellone (docs/notte3_tabellone.md)
+## Carte che hanno senso solo con la nebbia di guerra (senza nebbia non c'è nulla da nascondere o scoprire)
+const FOG_OPS = ["finta", "silenzio", "ricognizione"]
+## Ordini del comando: obiettivo a breve termine per ogni giocatore (conquista X entro N round → premio)
+const MISSION_ROUNDS = 3
+const MISSION_REWARDS = {
+	"card": {"name": "una carta Comando"},
+	"reinf": {"name": "4 unità di fanteria di rinforzo", "inf": 4},
+	"money": {"name": "150 $", "money": 150},
+}
+## Eventi mondiali: uno ogni WORLD_EVENT_EVERY round a partire da WORLD_EVENT_FIRST, visibili a tutti
+const WORLD_EVENT_FIRST = 3
+const WORLD_EVENT_EVERY = 4
+const WORLD_EVENT_HOLD = 2      # round entro cui va tenuto il territorio premio
+const WORLD_EVENTS = {
+	"convoglio": {"name": "Convoglio di aiuti", "kind": "prize", "reward": {"money": 250}, "rtext": "250 $"},
+	"giacimento": {"name": "Giacimento scoperto", "kind": "prize", "reward": {"oil": 80, "steel": 120}, "rtext": "80 petrolio e 120 acciaio"},
+	"archivio": {"name": "Archivi dei servizi segreti", "kind": "prize", "reward": {"card": 1}, "rtext": "una carta Comando"},
+	"diserzioni": {"name": "Diserzioni", "kind": "instant"},
+	"offensiva": {"name": "Finestra di bel tempo", "kind": "timed", "rounds": 1, "attacks": 1},
+}
+## Presidi dei territori neutrali all'inizio: 4-8 FAN, 0-2 CAR, 35% di avere 1-2 ART.
+## Notte 3: provati presidi piu' leggeri (NEUTRAL_START_LIGHT) per accelerare l'avvio, SCARTATI: su 40 partite la FO passava
+## dal 38% allo 0-10% di vittorie (perde il vantaggio della fanteria in piu'). Vedi docs/notte3_tabellone.md.
+const NEUTRAL_START = {"inf_min": 4, "inf_var": 5, "tank_var": 3, "art_chance": 0.35}
+const NEUTRAL_START_LIGHT = {"inf_min": 3, "inf_var": 4, "tank_var": 2, "art_chance": 0.2}
 ## Fortificazioni del territorio (livelli 0..3): costo del livello L = cost × L
 const FORT_KEYS = ["trench", "mines", "bunker"]
 const FORT_MAX := 3

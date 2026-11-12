@@ -42,7 +42,7 @@ var sel_cards: Array = []
 var targets: Array = []
 var target_set := {}
 var drag = null            # {from, pos0, active}
-var menu_opts := {"faction": 0, "opp": 3, "diff": "veterano", "mode": "conquista", "dist": "regionale", "ask_defense": true, "auto_battles": false, "fog": true, "fog_mode": "light"}
+var menu_opts := {"faction": 0, "opp": 3, "diff": "veterano", "mode": "conquista", "dist": "regionale", "ask_defense": true, "auto_battles": false, "fog": false, "fog_mode": "none"}
 var modal_kind := ""
 var modal_closable := true
 var _paused_before := false
@@ -73,6 +73,7 @@ var _mood := ""
 var _cursor_mode := ""
 var _tut_t := 0.0
 var threats: Array = []
+var _threat_key := ""
 var _demo_threats: Array = []   # solo per gli screenshot dimostrativi
 var _threat_i := -1
 var _vet_seen := {}             # territorio -> [owner, vet] per l'annuncio delle stelle
@@ -230,8 +231,8 @@ func start_game(spectator: bool) -> void:
 				players.append({"faction": i, "human": false, "difficulty": o["diff"]})
 				n += 1
 	var opts := {"players": players, "mode": o["mode"], "distribution": o["dist"], "seed": int(Time.get_unix_time_from_system()) & 0x7fffffff,
-		"ask_defense": o["ask_defense"], "auto_battles": o["auto_battles"], "fog": bool(o.get("fog", true)) and not spectator,
-		"fog_mode": "none" if spectator else String(o.get("fog_mode", "light"))}
+		"ask_defense": o["ask_defense"], "auto_battles": o["auto_battles"], "fog": bool(o.get("fog", false)) and not spectator,
+		"fog_mode": "none" if spectator else String(o.get("fog_mode", "none"))}
 	var g = _new_game(opts)
 	if g == null:
 		toast("Errore nell'avvio della partita", "bad")
@@ -380,6 +381,8 @@ func _begin_game(g, loaded: bool) -> void:
 	_pact_offers = []
 	_pact_offer = null
 	_turn_seen = ""
+	_recap_key = ""
+	_recap = []
 	_news_q = []
 	_ai_fast = false
 	_force_ctx = null
@@ -729,8 +732,17 @@ func _check_threats() -> void:
 	if h() < 0:
 		return
 	if turn_mode():
+		# notte 3: attacchi che le IA stanno preparando contro i miei territori (annunciati a fine turno)
 		threats = []
-		hud.set_threats([])
+		if game.has_method("threats_for") and human_alive():
+			for th in game.threats_for(h()):
+				threats.append({"to": int(th["to"]), "from": int(th["from"]), "owner": int(th["player"]), "n": int(th["att"]), "def": int(th["def"]), "left": 0.0, "turn": true})
+		hud.set_threats(threats)
+		var tk := str(threats)
+		if tk != _threat_key:
+			_threat_key = tk
+			if map != null and map.has_method("set_threats"):
+				map.set_threats(threats)   # disegno a carico della mappa (richiesta a GRAFICA in docs/notte3_richieste.md)
 		return
 	var now := Time.get_ticks_msec() / 1000.0
 	var alive := {}
@@ -884,6 +896,21 @@ func truce_turns() -> int:
 	if "truce_rounds" in game:
 		return maxi(0, int(game.truce_rounds) - round_n() + 1)
 	return 0
+
+## Attacchi consentiti in questo turno (1 di regola; 2 nella tregua iniziale; +1 con «Finestra di bel tempo»).
+func attacks_max() -> int:
+	return int(game.attacks_max()) if game != null and game.has_method("attacks_max") else 1
+
+func attacks_left() -> int:
+	if game != null and game.has_method("attacks_left"):
+		return int(game.attacks_left())
+	return 0 if attack_used() else 1
+
+## Almeno un attacco fatto in questo turno (per il tutorial: attack_used() è «attacchi finiti»).
+func attacked_any() -> bool:
+	if game != null and "attacks_done" in game:
+		return int(game.attacks_done) > 0
+	return attack_used()
 
 func attack_used() -> bool:
 	if "attack_used" in game:
@@ -1194,13 +1221,15 @@ func guide_state() -> Dictionary:
 				st["main"] = {"text": "Sì, passa all'attacco  ›", "act": "end-phase", "kind": "danger", "tip": "I rinforzi restano in attesa"}
 		"attack":
 			var skip := {"text": "Salta attacco  ›", "act": "end-phase", "kind": "normal", "tip": "Nessun attacco in questo turno: passa allo spostamento"}
+			if attacked_any():   # più attacchi nel turno (tregua, bel tempo): il secondo è facoltativo
+				skip = {"text": "Basta attacchi: Spostamento  ›", "act": "end-phase", "kind": "normal", "tip": "Rinuncia agli attacchi rimasti e passa alla fase 3 · Spostamento"}
 			if attack_used() or move_used():
 				st["text"] = "Attacco del turno eseguito. Ora puoi [b]spostare[/b] truppe tra i tuoi territori."
 				st["main"] = {"text": "Fase successiva: Spostamento  ›", "act": "end-phase", "tip": "Passa alla fase 3 · Spostamento"}
 				st["alt"] = end_alt
 			elif sel_own() and not targets.is_empty():
 				st["text"] = "Clicca un bersaglio [color=#ff8a6a]evidenziato in rosso[/color] (%d possibil%s): si apre il pannello d'attacco." % [targets.size(), "e" if targets.size() == 1 else "i"]
-				st["sub"] = "Un solo attacco per turno. Nel pannello scegli quante unità inviare e vedi la previsione."
+				st["sub"] = _attacks_note() + " Nel pannello scegli quante unità inviare e vedi la previsione."
 				st["main"] = skip
 				st["alt"] = end_alt
 			else:
@@ -1208,6 +1237,8 @@ func guide_state() -> Dictionary:
 				if n > 0:
 					st["text"] = "Scegli un tuo territorio con almeno 2 unità ([color=#ffc060]pulsano in ambra[/color]), poi un nemico confinante [color=#ff8a6a]in rosso[/color]."
 					st["sub"] = ("Da qui non puoi attaccare: scegline un altro. " if sel_own() else "") + "Oppure salta l'attacco." + (" Tregua: solo territori neutrali." if truce_turns() > 0 else "")
+					if attacks_max() > 1:
+						st["sub"] = _attacks_note() + " " + String(st["sub"])
 				else:
 					st["text"] = "Nessun attacco possibile in questo turno."
 					st["sub"] = "Ti servono almeno 2 unità vicino a un nemico o neutrale."
@@ -1226,7 +1257,79 @@ func guide_state() -> Dictionary:
 			else:
 				st["text"] = "Facoltativo: clicca un tuo territorio ([color=#8ad6ff]pulsano in azzurro[/color]), poi un tuo territorio collegato per spostare truppe."
 				st["sub"] = "Altrimenti premi Fine turno."
+	st["goal"] = goal_text()
 	return st
+
+func _attacks_note() -> String:
+	var am := attacks_max()
+	if am <= 1:
+		return "Un solo attacco per turno."
+	return "Attacchi rimasti in questo turno: %d su %d%s." % [attacks_left(), am, " (tregua iniziale: due attacchi, solo contro i neutrali)" if truce_turns() > 0 else ""]
+
+## Riga degli obiettivi a breve termine nel riquadro ORDINI: ordine del comando ed evento mondiale in corso.
+func goal_text() -> String:
+	if game == null or h() < 0:
+		return ""
+	var parts := []
+	if game.has_method("mission_text"):
+		var mt := String(game.mission_text(h()))
+		if mt != "":
+			parts.append("[color=#ffd57a]★ ORDINE DEL COMANDO[/color]  " + mt)
+	if game.has_method("world_event_text"):
+		var wt := String(game.world_event_text())
+		if wt != "":
+			parts.append("[color=#8ad6ff]◆ EVENTO[/color]  " + wt)
+	return "\n".join(parts)
+
+# ================================================================== rapporto del round (notte 3)
+## Cosa è successo mentre giocavano le IA: raccolto dai segnali, mostrato all'inizio del turno del giocatore
+## (prima le minacce annunciate, poi ciò che lo riguarda, poi il resto). Un clic su una riga inquadra il territorio.
+var _recap: Array = []        # {text, kind: "threat"|"bad"|"good"|"news"|"info", terr, w}
+var _last_cap := {}
+
+func _recap_add(text: String, kind: String, terr: int, w: int) -> void:
+	if game == null or not turn_mode() or h() < 0 or my_turn():
+		return
+	_recap.append({"text": text, "kind": kind, "terr": terr, "w": w})
+
+func _sh(i: int) -> String:
+	return String(game.players[i]["fac"]["short"]) if i >= 0 and i < game.players.size() else "Neutrali"
+
+func recap_lines() -> Array:
+	var lines := []
+	if game != null and game.has_method("threats_for") and human_alive():
+		for th in game.threats_for(h()):
+			lines.append({"text": "%s ammassa %d unità in %s contro %s (%d in difesa)" % [_sh(int(th["player"])), int(th["att"]), _tn(th["from"]), _tn(th["to"]), int(th["def"])],
+				"kind": "threat", "terr": int(th["to"]), "w": 5})
+	var rest := _recap.duplicate()
+	rest.sort_custom(func(a, b): return int(a["w"]) > int(b["w"]))
+	lines.append_array(rest)
+	return lines
+
+var _recap_key := ""
+
+func _show_recap() -> void:
+	var rk := "%d|%d" % [h(), round_n()]
+	if rk == _recap_key:
+		return   # già mostrato per questo turno
+	_recap_key = rk
+	var lines := recap_lines()
+	_recap = []
+	if round_n() <= 1 or not hud.has_method("show_recap"):
+		return
+	var keep := lines.slice(0, 6)
+	hud.show_recap(keep, lines.size() - keep.size())
+	# le minacce lampeggiano sul tabellone come frecce
+	if map != null and map.has_method("turn_arrow") and not map.has_method("set_threats") and game.has_method("threats_for"):
+		for th in game.threats_for(h()):
+			map.turn_arrow(int(th["from"]), int(th["to"]), int(th["player"]), "attack", 2.6)
+
+func focus_terr(t: int) -> void:
+	if t < 0 or game == null:
+		return
+	select(t)
+	if map != null and map.has_method("focus"):
+		map.focus(t)
 
 ## Territori del giocatore da cui si può agire ADESSO (pulsano sul tabellone quando non c'è selezione utile).
 func click_marks() -> Array:
@@ -1323,7 +1426,9 @@ func end_phase() -> void:
 	tcall("end_phase")
 	Sfx.play("click")
 	if my_turn() and phase_key() != before and phase_key() != "":
-		var msg := {"attack": "Fase 2 · Attacco: un attacco facoltativo", "move": "Fase 3 · Spostamento: uno spostamento facoltativo"}
+		var am := attacks_max()
+		var msg := {"attack": "Fase 2 · Attacco: un attacco facoltativo" if am <= 1 else "Fase 2 · Attacco: fino a %d attacchi in questo turno" % am,
+			"move": "Fase 3 · Spostamento: uno spostamento facoltativo"}
 		feedback(String(msg.get(phase_key(), "")), "info")
 	refresh(true)
 
@@ -1333,6 +1438,9 @@ func end_turn() -> void:
 	set_mode(null)
 	_ai_fast = false
 	_pool_warn_t = -100.0
+	_recap = []
+	if hud.has_method("hide_recap"):
+		hud.hide_recap()
 	tcall("end_turn")
 	Sfx.play("order")
 	refresh(true)
@@ -1383,6 +1491,7 @@ func _on_turn_start(p: int) -> void:
 		_tension_until = 0.0   # torna la musica del tabellone all'inizio del turno del giocatore
 		hud.turn_banner(p, true)
 		_turn_report()
+		_show_recap()
 		Sfx.play("research")
 		if is_inside_tree():
 			get_tree().create_timer(2.4).timeout.connect(_flush_news)
@@ -1580,6 +1689,10 @@ func act(a: String, ds: Dictionary = {}) -> void:
 	match a:
 		"end-phase": end_phase()
 		"end-turn": end_turn()
+		"focus-terr": focus_terr(int(ds.get("t", -1)))
+		"recap-close":
+			if hud.has_method("hide_recap"):
+				hud.hide_recap()
 		"ai-fast": ai_fast()
 		"tutorial": start_tutorial()
 		"fortify": do_fortify(String(ds.get("k", "")))
@@ -1597,7 +1710,7 @@ func act(a: String, ds: Dictionary = {}) -> void:
 		"m-ask": o["ask_defense"] = not o["ask_defense"]; menu.refresh()
 		"m-auto": o["auto_battles"] = not o["auto_battles"]; menu.refresh()
 		"m-fog":
-			o["fog_mode"] = String(ds.get("v", "light"))
+			o["fog_mode"] = String(ds.get("v", "none"))
 			o["fog"] = o["fog_mode"] != "none"
 			menu.refresh()
 		"pact": propose_pact(int(ds["p"]))
@@ -1954,11 +2067,23 @@ func _on_signal(name: String, d: Dictionary) -> void:
 					_rep_add("lost", _tn(d.get("terr")))
 			elif hh < 0:
 				Sfx.play("capture")
+			_last_cap = d
 			if sel == int(d.get("terr", -1)):
 				refresh(true)
 		"battle":
 			if hh < 0 or int(d.get("attacker", -2)) == hh or int(d.get("defender", -2)) == hh:
 				Sfx.play("battle")
+			var ba := int(d.get("attacker", -1))
+			var bd := int(d.get("defender", -1))
+			var bt := int(d.get("terr", -1))
+			if hh >= 0 and ba != hh and ba >= 0 and bt >= 0:
+				var won: bool = String(d.get("winner", "")) == "att"
+				if bd == hh:
+					_recap_add(("%s ti ha strappato %s" if won else "Hai respinto %s a %s") % [_sh(ba), _tn(bt)], "bad" if won else "good", bt, 4)
+				elif won:
+					_recap_add("%s conquista %s%s" % [_sh(ba), _tn(bt), (" (a %s)" % _sh(bd)) if bd >= 0 else ""], "info", bt, 2 if bd >= 0 else 1)
+				elif bd >= 0:
+					_recap_add("%s respinge %s a %s" % [_sh(bd), _sh(ba), _tn(bt)], "info", bt, 1)
 		"built":
 			if int(d.get("player", -2)) == hh:
 				Sfx.play("build")
@@ -1993,13 +2118,21 @@ func _on_signal(name: String, d: Dictionary) -> void:
 			var t := int(d.get("terr", -1))
 			if hh >= 0 and t >= 0 and int(game.terr[t]["owner"]) == hh and int(d.get("by", -2)) != hh:
 				toast("Attacco missilistico su " + _tn(t) + "!", "bad")
+				_recap_add("Missili di %s su %s" % [_sh(int(d.get("by", -1))), _tn(t)], "bad", t, 4)
+			elif t >= 0 and int(d.get("by", -2)) != hh:
+				_recap_add("Missili di %s su %s (%s)" % [_sh(int(d.get("by", -1))), _tn(t), _sh(int(game.terr[t]["owner"]))], "info", t, 1)
 		"sabotage":
 			var t := int(d.get("terr", -1))
 			if hh >= 0 and t >= 0 and int(game.terr[t]["owner"]) == hh and int(d.get("by", -2)) != hh:
 				Sfx.play("alert"); toast("Sabotaggio in " + _tn(t) + "!", "bad")
+				_recap_add("Sabotaggio di %s in %s: produzione ferma" % [_sh(int(d.get("by", -1))), _tn(t)], "bad", t, 4)
 		"golpe":
 			if int(d.get("by", -2)) == hh:
 				Sfx.play("capture")
+			else:
+				var gt := int(d.get("terr", -1))
+				var mine: bool = int(_last_cap.get("terr", -2)) == gt and int(_last_cap.get("prev", -2)) == hh and hh >= 0
+				_recap_add("Golpe di %s a %s%s" % [_sh(int(d.get("by", -1))), _tn(gt), ": territorio perduto" if mine else ""], "bad" if mine else "info", gt, 4 if mine else 2)
 		"hqLost":
 			if int(d.get("player", -2)) == hh:
 				if (gcall("territories_of", [hh], []) as Array).is_empty():
@@ -2016,6 +2149,7 @@ func _on_signal(name: String, d: Dictionary) -> void:
 				Sfx.play("defeat"); music("defeat"); _elim_pending = true
 			else:
 				toast(game.players[int(d["player"])]["name"] + " è stata eliminata", "info")
+				_recap_add("%s è stata eliminata" % _sh(int(d["player"])), "news", -1, 3)
 		"victory":
 			if hh < 0 or int(d.get("winner", -2)) == hh:
 				Sfx.play("victory")
@@ -2062,6 +2196,15 @@ func _on_signal(name: String, d: Dictionary) -> void:
 			var tx := String(d.get("text", ""))
 			if tx != "":
 				hud.headline(tx)
+				var ht := -1   # il titolo di un evento mondiale inquadra il suo territorio
+				if "world_event" in game and game.world_event is Dictionary and tx.begins_with(String(Data.WORLD_EVENTS[game.world_event["id"]]["name"])):
+					ht = int(game.world_event["terr"])
+				_recap_add(tx, "news", ht, 3)
+		"objective_done":
+			if int(d.get("player", -2)) == hh:
+				Sfx.play("research")
+		"world_event", "objective_new", "objective_failed":
+			refresh(true)
 		"turn_start":
 			_on_turn_start(int(d.get("player", cur_player())))
 		"move", "attack":
@@ -2810,6 +2953,8 @@ func _run_demo_turns(demo: String) -> void:
 		"supply":
 			# inizio turno: rinforzi da schierare (schieramento attivo), QG selezionato
 			select(hq)
+			if Shot.arg("threat") == "1":
+				_demo_threat()
 		"supply2":
 			# dopo lo schieramento: pannello del territorio con le schede, esito nel riquadro ORDINI
 			select(hq)
@@ -2951,6 +3096,29 @@ func demo_play_rounds(n: int) -> void:
 		else:
 			game.update(0.5)
 	_turn_seen = ""
+	refresh(true)
+
+## Screenshot (--threat=1): una minaccia annunciata contro un territorio del giocatore, con il rapporto del round.
+func _demo_threat() -> void:
+	if game == null or not game.has_method("set_intent"):
+		return
+	var best := []
+	var bn := -1
+	for t in gcall("territories_of", [h()], []):
+		for j in Data.TERRITORIES[int(t)]["adj"]:
+			var o := int(game.terr[j]["owner"])
+			var n := Data.total_units(game.terr[j]["forces"])
+			if o >= 0 and o != h() and n > bn:
+				bn = n
+				best = [o, j, int(t)]
+	if best.is_empty():
+		return
+	game.set_intent(best[0], best[1], best[2])
+	_recap.append({"text": "%s conquista %s" % [_sh(best[0]), _tn(best[1])], "kind": "info", "terr": best[1], "w": 1})
+	_recap_key = ""
+	_show_recap()
+	_pact_offers.clear()   # niente proposte di patto sopra lo screenshot
+	focus_terr(best[2])
 	refresh(true)
 
 ## Coppia [mio territorio, bersaglio] per un attacco dimostrativo (bersaglio più debole).

@@ -47,6 +47,7 @@ func _initialize() -> void:
 	test_two_player_random()
 	test_headlines()
 	test_bad_saves()
+	test_save_v4()
 	CombatS.set("tactical", true)
 	ok(logger.errors == 0, "nessun errore del motore (%d)" % logger.errors)
 	for e in logger.first:
@@ -233,7 +234,7 @@ func test_mid_turn_save() -> void:
 	g.terr[nb]["forces"] = F({"inf": 1})
 	ok(g.attack(from, nb, F({"inf": 20, "tank": 5}))["ok"], "attacco prima del salvataggio")
 	var g2 = GameS.from_json(g.to_json())
-	ok(g2 != null and g2.phase == "attacco" and g2.attack_used and not g2.move_used and g2.current == 0, "fase e attacco usato ricaricati")
+	ok(g2 != null and g2.phase == "attacco" and g2.attacks_done == 1 and g2.attack_used == g.attack_used and g2.attacks_left() == g.attacks_left() and not g2.move_used and g2.current == 0, "fase e attacchi fatti ricaricati")
 	ok(g2.terr[hq]["queue"].size() == 1 and g2.terr[hq]["queue"][0]["total"] == 2 and g2.terr[hq]["building"]["key"] == "impianto", "code ricaricate")
 	ok(g2.terr[hq]["fort"]["trench"] == 1 and g2.players[0]["pool"]["inf"] == g.players[0]["pool"]["inf"], "fortificazioni e pool")
 	ok(g2.terr[nb]["regroup"] == 1 and g2.terr[nb]["unrest"] == 2, "riorganizzazione/occupazione")
@@ -573,6 +574,65 @@ func test_headlines() -> void:
 	ok(got2.is_empty(), "nessun annuncio ripetuto dopo la ricarica " + str(got2))
 	g.dispose()
 	g2.dispose()
+
+
+func test_save_v4() -> void:
+	print("- salvataggio v4 (notte 3): ordini del comando, eventi mondiali, minacce, attacchi del turno; migrazione v3")
+	var g = ai_game(3, "conquista", "regionale", 9)
+	run(g, 4)
+	g.players[0]["mission"] = {"terr": 7, "until": g.round + 2, "reward": "reinf", "born": g.round}
+	g.world_event = {"id": "giacimento", "terr": 11, "round": g.round + 2, "born": g.round}
+	g._update_goal_marks()
+	var b := -1
+	var a := -1
+	for t in g.territories_of(1):
+		for j in D.TERRITORIES[t]["adj"]:
+			if g.terr[j]["owner"] >= 0 and g.terr[j]["owner"] != 1:
+				a = t; b = j
+	if a >= 0:
+		g.intents[1] = {"from": a, "to": b, "round": g.round}
+	g.attacks_done = 1
+	var d: Dictionary = JSON.parse_string(g.to_json())
+	ok(int(d["version"]) == 4 and d.has("pace") and d["opts"].has("missions"), "versione 4 con la sezione «pace»")
+	var g2 = GameS.deserialize(d)
+	ok(g2 != null and GameS.last_load_error == "", "ricaricato")
+	ok(g2.players[0]["mission"] == g.players[0]["mission"], "ordine del comando salvato")
+	ok(g2.world_event == g.world_event and g2._next_event == g._next_event and g2._last_event == g._last_event, "evento mondiale salvato")
+	ok(g2.intents == g.intents and g2.attacks_done == 1, "minacce annunciate e attacchi del turno salvati")
+	ok(g2._xrng.state == g._xrng.state and g2.missions_on and g2.events_on, "RNG di ordini ed eventi salvato")
+	ok(g2.scenario_targets == g.scenario_targets, "segnali sul tabellone ricostruiti")
+	var e0 := logger.errors
+	run(g, 5)
+	run(g2, 5)
+	ok(logger.errors == e0 and g.round == g2.round, "le due partite proseguono senza errori")
+	var same := true
+	for i in g.terr.size():
+		if g.terr[i]["owner"] != g2.terr[i]["owner"] or g.terr[i]["forces"] != g2.terr[i]["forces"]:
+			same = false
+	ok(same and str(g.players[0]["mission"]) == str(g2.players[0]["mission"]) and str(g.world_event) == str(g2.world_event), "originale e ricaricata restano identiche dopo 5 round")
+	g2.dispose()
+	# migrazione: un salvataggio v3 non ha «pace» né gli ordini
+	var d3: Dictionary = JSON.parse_string(g.to_json())
+	d3["version"] = 3
+	d3.erase("pace")
+	d3["opts"].erase("missions"); d3["opts"].erase("events"); d3["opts"].erase("attacks_per_turn")
+	for P in d3["players"]:
+		P.erase("mission")
+	d3["turn"]["attack_used"] = true
+	var g3 = GameS.deserialize(d3)
+	ok(g3 != null and GameS.last_load_error == "", "salvataggio v3 caricato")
+	if g3 != null:
+		ok(g3.players[0]["mission"] == null and g3.world_event == null and g3.intents.count(null) == g3.intents.size(), "v3 migrato: nessun ordine, evento o minaccia in corso")
+		ok(g3.missions_on and g3.events_on and g3._next_event == maxi(g3.round + 1, int(D.WORLD_EVENT_FIRST)) and g3.attacks_done == 1, "v3 migrato: ordini ed eventi partono dal turno/round successivo")
+		var e1 := logger.errors
+		run(g3, 6)
+		var any_m := false
+		for P in g3.players:
+			if P["mission"] != null or int(P["stats"].get("missions", 0)) > 0:
+				any_m = true
+		ok(logger.errors == e1 and any_m, "v3 migrato: la partita prosegue e arrivano gli ordini del comando")
+		g3.dispose()
+	g.dispose()
 
 
 func test_bad_saves() -> void:

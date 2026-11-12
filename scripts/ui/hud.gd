@@ -42,6 +42,9 @@ var g_phase: Label
 var g_fb: Label
 var g_text: RichTextLabel
 var g_sub: Label
+var g_goal: RichTextLabel     # obiettivi a breve termine: ordine del comando, evento mondiale (notte 3)
+var recap: PanelContainer     # rapporto del round all'inizio del turno
+var recap_v: VBoxContainer
 var g_main: Button
 var g_alt: Button
 var _g_state := {}
@@ -474,6 +477,10 @@ func _build_guide() -> void:
 	g_sub = UIKit.label("", FS_SMALL, UIKit.DIM)
 	g_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(g_sub)
+	g_goal = UIKit.rich("", 13, Color("#e6ecdf"))
+	g_goal.custom_minimum_size.x = GUIDE_W - 310
+	g_goal.visible = false
+	v.add_child(g_goal)
 	h.add_child(v)
 	var bv := UIKit.vbox(6)
 	bv.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -530,6 +537,9 @@ func _refresh_guide() -> void:
 		var sub := String(st.get("sub", ""))
 		g_sub.text = sub
 		g_sub.visible = sub != ""
+		var goal := String(st.get("goal", ""))
+		g_goal.text = goal
+		g_goal.visible = goal != ""
 		for pair in [[g_main, st.get("main")], [g_alt, st.get("alt")]]:
 			var b: Button = pair[0]
 			var d = pair[1]
@@ -548,6 +558,7 @@ func _refresh_guide() -> void:
 	# il testo a capo (RichTextLabel fit_content) conosce la propria altezza solo dopo un passaggio di layout:
 	# ricalcolo sempre la dimensione (costa poco)
 	g_text.size.x = g_text.custom_minimum_size.x
+	g_goal.size.x = g_goal.custom_minimum_size.x
 	guide.size = Vector2.ZERO
 	guide.reset_size()
 	var vs := get_viewport_rect().size
@@ -826,6 +837,77 @@ func _build_overlays() -> void:
 	tip.add_child(tip_text)
 	add_child(tip)
 
+# ================================================================== rapporto del round (notte 3)
+const RECAP_COL := {"threat": Color("#ff8a6a"), "bad": Color("#ff8a6a"), "good": Color("#7fe08f"), "news": Color("#ffd57a"), "info": Color("#9fb4a6")}
+const RECAP_MARK := {"threat": "⚠", "bad": "▼", "good": "✓", "news": "◆", "info": "•"}
+
+func _build_recap() -> void:
+	recap = PanelContainer.new()
+	var sb := UIKit.box(Color(0.03, 0.05, 0.05, 0.93), UIKit.LINE2, 1, 5, Vector4(12, 9, 10, 10))
+	sb.border_width_left = 4
+	sb.border_color = Color(UIKit.AMBER, 0.6)
+	sb.shadow_color = Color(0, 0, 0, 0.45)
+	sb.shadow_size = 8
+	recap.add_theme_stylebox_override("panel", sb)
+	recap.custom_minimum_size.x = 400
+	recap.visible = false
+	recap_v = UIKit.vbox(3)
+	recap.add_child(recap_v)
+	add_child(recap)
+
+## lines: [{text, kind, terr}], more: voci non mostrate (restano nel Registro)
+func show_recap(lines: Array, more: int = 0) -> void:
+	if recap == null:
+		_build_recap()
+	for c in recap_v.get_children():
+		c.queue_free()
+	if lines.is_empty():
+		recap.visible = false
+		return
+	var hd := UIKit.hbox(8)
+	var tl := UIKit.label("DALL'ULTIMO TURNO", FS_SMALL, UIKit.AMBER, "mono", 700)
+	tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hd.add_child(tl)
+	hd.add_child(UIKit.button("×", "ghost", "xs", main_act.bind("recap-close", {}), "Chiudi il rapporto"))
+	recap_v.add_child(hd)
+	for ln in lines:
+		var kind := String(ln.get("kind", "info"))
+		var col: Color = RECAP_COL.get(kind, UIKit.TEXT)
+		var b := Button.new()
+		b.flat = true
+		b.focus_mode = Control.FOCUS_NONE
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.text = "%s  %s" % [RECAP_MARK.get(kind, "•"), String(ln.get("text", ""))]
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.custom_minimum_size = Vector2(376, 0)
+		b.add_theme_font_size_override("font_size", 13)
+		b.add_theme_font_override("font", UIKit.font("sans", 600 if kind in ["threat", "bad", "good"] else 400))
+		for cn in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
+			b.add_theme_color_override(cn, col if cn == "font_color" else col.lightened(0.25))
+		var t := int(ln.get("terr", -1))
+		if t >= 0:
+			b.tooltip_text = "Clic: inquadra " + Data.TERRITORIES[t]["name"]
+			b.pressed.connect(main_act.bind("focus-terr", {"t": t}))
+			b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		recap_v.add_child(b)
+	if more > 0:
+		recap_v.add_child(UIKit.label("… altre %d nel Registro" % more, 11, UIKit.DIM))
+	recap.visible = true
+	_place_recap()
+
+func hide_recap() -> void:
+	if recap != null:
+		recap.visible = false
+
+func _place_recap() -> void:
+	if recap == null or not recap.visible:
+		return
+	recap.size = Vector2.ZERO
+	recap.reset_size()
+	# a sinistra sotto la barra in alto; se il cassetto è aperto si sposta alla sua destra
+	var x := RAIL_W + 2 * M + ((LEFT_W + M) if drawer_tab != "" else 0.0)
+	recap.position = Vector2(x, TOP_H + M)
+
 # ================================================================== avvio partita
 func start(g) -> void:
 	game = g
@@ -837,6 +919,7 @@ func start(g) -> void:
 	res_box.visible = not spect
 	banner.visible = false
 	set_threats([])
+	hide_recap()
 	_log_seen = _player_events()
 	_rail_key = ""
 	_g_key = ""
@@ -916,6 +999,9 @@ func refresh(_force: bool = false) -> void:
 	_refresh_rail()
 	_refresh_guide()
 	_fit_panels()
+	_place_recap()
+	if recap != null and recap.visible and (main.modal_kind != "" or not main.my_turn()):
+		recap.visible = false
 
 func _fit_panels() -> void:
 	var vh := get_viewport_rect().size.y
@@ -2133,6 +2219,8 @@ func _refresh_bottom() -> void:
 		ops.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		var why := "Seleziona tre carte" if main.sel_cards.size() != 3 else ("" if valid else "Tris non valido (tre uguali, tre diverse o con jolly)")
 		for op in Data.OPS.keys():
+			if game.has_method("op_available") and not game.op_available(op):
+				continue   # carte inganno: solo con la nebbia di guerra
 			var b := UIKit.button(Data.OPS[op]["name"].replace("Attacco missilistico", "Missile"), "op", "xs", main_act.bind("op", {"op": op}), Data.OPS[op]["name"] + ": " + Data.OPS[op]["desc"] + ((" — " + why) if why != "" else ""))
 			b.disabled = not valid or not main.can_supply()
 			if valid and not main.can_supply():
@@ -2310,6 +2398,18 @@ func update_tip(force: bool = false) -> void:
 		s += "\n[color=#ffb070]Truppe logorate −15%% (recupero tra %d turni)[/color]" % main.worn_of(t)
 	if o >= 0 and hh >= 0 and o != hh and main.pact_between(hh, o) != null:
 		s += "\n[color=#bff0d0]Patto di non aggressione %s[/color]" % main.until_text(float(main.pact_between(hh, o)["until"]))
+	# notte 3: ordine del comando, territorio premio, minaccia annunciata
+	if hh >= 0 and game.has_method("mission_of"):
+		var ms = game.mission_of(hh)
+		if ms is Dictionary and int(ms["terr"]) == t:
+			s += "\n[color=#ffd57a]★ Ordine del comando: conquistala entro il round %d → %s[/color]" % [int(ms["until"]), Data.MISSION_REWARDS[ms["reward"]]["name"]]
+		if game.world_event is Dictionary and int(game.world_event["terr"]) == t:
+			s += "\n[color=#8ad6ff]◆ %s[/color]" % game.world_event_text()
+		for th in main.threats:
+			if th.get("turn", false) and int(th["to"]) == t:
+				s += "\n[color=#ff8a6a]⚠ %s prepara un attacco da %s (%d unità)[/color]" % [game.players[int(th["owner"])]["fac"]["short"], Data.TERRITORIES[int(th["from"])]["name"], int(th["n"])]
+			elif th.get("turn", false) and int(th["from"]) == t:
+				s += "\n[color=#ff8a6a]⚠ Da qui si prepara un attacco contro %s[/color]" % Data.TERRITORIES[int(th["to"])]["name"]
 	var mode = main.mode
 	if mode != null and mode["type"] == "card":
 		s += "\n[color=#ffd57a][b]Clic: %s[/b][/color]" % Data.OPS[mode["op"]]["name"]
@@ -2461,7 +2561,11 @@ func set_threats(list: Array) -> void:
 			_threat_tw = null
 		return
 	var first: Dictionary = list[0]
-	threat_lbl.text = ("%d ATTACCHI" % n if n > 1 else "ATTACCO") + " · %d s" % int(ceil(maxf(0.0, float(first["left"]))))
+	if first.get("turn", false):
+		threat_lbl.text = ("%d MINACCE" % n) if n > 1 else ("MINACCIA · %s" % Data.TERRITORIES[int(first["to"])]["name"])
+		threat_btn.tooltip_text = "Un avversario prepara un attacco contro un tuo territorio: clic per inquadrarlo.\nPuoi rinforzarlo, fortificarlo o colpire per primo."
+	else:
+		threat_lbl.text = ("%d ATTACCHI" % n if n > 1 else "ATTACCO") + " · %d s" % int(ceil(maxf(0.0, float(first["left"]))))
 	if not was or _threat_tw == null:
 		if _threat_tw:
 			_threat_tw.kill()

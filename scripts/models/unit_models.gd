@@ -406,7 +406,9 @@ static func _make(kind: String, c: Color, lod: int, burnt: bool, tint: float, fa
 	root.name = "Unit_" + kind
 	var prev := _fac
 	_fac = faction if faction >= 0 and faction < FACTION_STYLES.size() and not (kind in NAVAL) else -1
-	if _fac >= 0 and FactionModels.build_into(root, kind, c, lod, burnt, tint, _fac):
+	if _ext_into(root, kind, c, burnt, tint, faction):
+		pass
+	elif _fac >= 0 and FactionModels.build_into(root, kind, c, lod, burnt, tint, _fac):
 		pass
 	else:
 		_make_generic(root, kind, c, lod, burnt, tint)
@@ -424,6 +426,323 @@ static func _make(kind: String, c: Color, lod: int, burnt: bool, tint: float, fa
 	root.set_meta("tris", tris)
 	root.set_meta("faction", faction)
 	return root
+
+# ============================================================== modelli esterni (assets/models/*.glb)
+## NOTTE 3 — modelli veri (CC0/CC-BY, crediti in assets/models/LICENZA.txt). File cercati, in ordine:
+## `assets/models/<kind>_f<fazione>.glb`, poi `assets/models/<kind>.glb` (non per le fazioni che costruiscono quel tipo su
+## ruote: la loro sagoma in codice resta), altrimenti il modello in codice. Contratto del file (lo produce il convertitore,
+## vedi docs/notte3_grafica.md): Y su, avanti −Z, origine a terra, nodi "Body", "Turret" > "Barrel" > "Muzzle", "Rotor",
+## "TailRotor"; superfici con materiale chiamato come il ruolo (paint, metal, track, glass, rubber, matte, faction) e colore
+## di vertice = moltiplicatore di luminosità. Vernice, mimetica di fazione, usura e relitto li mette ModelKit come per i
+## modelli in codice; i livelli di dettaglio li genera ImporterMesh (scelti dal motore in base alla grandezza a schermo).
+const EXT_DIR := "res://assets/models/"
+const EXT_PARTS := ["Body", "Turret", "Barrel", "Rotor", "TailRotor"]
+static var use_ext := true          ## false = solo modelli in codice (confronti prima/dopo: `--ext=0`)
+static var _ext_paths := {}
+static var _ext_scenes := {}
+
+static var _ext_checked := false
+
+static func ext_path(kind: String, faction: int) -> String:
+	if not _ext_checked:
+		# interruttore di confronto per demo e misure: `--ext=0` (argomento utente letto dall'autoload Shot)
+		_ext_checked = true
+		var ml := Engine.get_main_loop() as SceneTree
+		var sh := ml.root.get_node_or_null("Shot") if ml != null else null
+		if sh != null and sh.has_method("arg") and String(sh.call("arg", "ext", "1")) == "0":
+			use_ext = false
+	if not use_ext:
+		return ""
+	var key := "%s|%d" % [kind, faction]
+	if _ext_paths.has(key):
+		return _ext_paths[key]
+	var p := ""
+	var fp := "%s%s_f%d.glb" % [EXT_DIR, kind, faction]
+	var gp := "%s%s.glb" % [EXT_DIR, kind]
+	if faction >= 0 and ResourceLoader.exists(fp):
+		p = fp
+	elif ResourceLoader.exists(gp) and not (faction >= 0 and faction < FACTION_STYLES.size() and kind in (FACTION_STYLES[faction]["wheeled"] as Array)):
+		p = gp
+	_ext_paths[key] = p
+	return p
+
+static func _ext_into(root: Node3D, kind: String, c: Color, burnt: bool, tint: float, faction: int) -> bool:
+	var path := ext_path(kind, faction)
+	if path == "":
+		return false
+	if not _ext_scenes.has(path):
+		_ext_scenes[path] = load(path)
+	var ps := _ext_scenes[path] as PackedScene
+	if ps == null:
+		_ext_paths["%s|%d" % [kind, faction]] = ""
+		return false
+	var src := ps.instantiate() as Node3D
+	var air := kind in ["heli", "jet", "drone"]
+	var box := AABB()
+	var first := true
+	var made := {}
+	for pn in EXT_PARTS:
+		var sn := src.find_child(pn, true, false) as MeshInstance3D
+		if sn == null or sn.mesh == null:
+			continue
+		var par: Node3D = root
+		var off := sn.position
+		if pn == "Barrel" and made.has("Turret"):
+			par = made["Turret"]
+			off += (made["Turret"] as Node3D).position
+		var mi := _mi(pn, _ext_mesh(path, pn, sn.mesh, kind, c, burnt, tint, off), sn.position)
+		par.add_child(mi)
+		made[pn] = mi
+		var bb := mi.mesh.get_aabb()
+		bb.position += off
+		box = bb if first else box.merge(bb)
+		first = false
+	if not made.has("Body"):
+		src.free()
+		for ch in root.get_children():
+			root.remove_child(ch)
+			ch.free()
+		return false
+	for mn in ["Muzzle", "Muzzle2"]:
+		var mk := src.find_child(mn, true, false) as Node3D
+		if mk != null:
+			var mp := mk.get_parent()
+			var host: Node3D = made[String(mp.name)] if mp != null and made.has(String(mp.name)) else root
+			host.add_child(_marker(mn, mk.position))
+	src.free()
+	if made.has("Turret") and not burnt:
+		# insegne della fazione come sui mezzi in codice: pannello di riconoscimento aereo su una zona libera del tetto
+		# della torretta, fascia attorno alla torretta e strisce sui parafanghi (vernice "dipinta" sulla mesh: _ext_decal)
+		var tmesh: ArrayMesh = (made["Turret"] as MeshInstance3D).mesh
+		var roof: Array = _ext_roof(tmesh)
+		var tb := tmesh.get_aabb()
+		var ry: float = (roof[0] as Vector3).y if not roof.is_empty() else tb.end.y
+		if not roof.is_empty():
+			var psz: Vector2 = roof[1]
+			var pan := _mi("Panel", _cached("ext_panel%d" % int(psz.x * 100.0), c, 0, false, 0.0, func(b: ModelKit) -> void:
+				b.box("faction", Vector3(psz.x, 0.03, psz.y), Vector3.ZERO, b.fac)))
+			pan.position = (roof[0] as Vector3) + Vector3(0, 0.012, 0)
+			pan.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			(made["Turret"] as Node3D).add_child(pan)
+		var band := _ext_decal(path + "|tband", tmesh, c, 1, lerpf(tb.position.y, ry, 0.42), lerpf(tb.position.y, ry, 0.72), 0.5, 0.0)
+		if band != null:
+			var bi := _mi("Band", band)
+			bi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			(made["Turret"] as Node3D).add_child(bi)
+		var bmesh: ArrayMesh = (made["Body"] as MeshInstance3D).mesh
+		var hb := bmesh.get_aabb()
+		var stripe := _ext_decal(path + "|stripe", bmesh, c, 2, hb.position.z + hb.size.z * 0.16, hb.position.z + hb.size.z * 0.36, -0.9, hb.size.x * 0.5 * 0.56)
+		if stripe != null:
+			var si := _mi("Stripe", stripe)
+			si.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			(made["Body"] as Node3D).add_child(si)
+	root.set_meta("length", box.size.z)
+	root.set_meta("height", box.size.y)
+	root.set_meta("air", air)
+	root.set_meta("ext", path)
+	return true
+
+## Insegna "dipinta" su una mesh: i triangoli verniciati (superfici "paint") ritagliati nella fascia lo..hi lungo `axis`
+## (1 = Y: fascia attorno alla torretta sulle pareti; 2 = Z: striscia sui piani rivolti in alto), alzati di 1 cm lungo la
+## normale e colorati con il colore della fazione. `ny` > 0: solo pareti con |n.y| < ny; `ny` < 0: solo piani con n.y > -ny.
+## `min_x`: solo triangoli oltre questa distanza dall'asse (parafanghi). null se non resta niente.
+static func _ext_decal(key: String, mesh: ArrayMesh, c: Color, axis: int, lo: float, hi: float, ny: float, min_x: float) -> ArrayMesh:
+	var k := "extdecal|%s|%s" % [key, c.to_html(false)]
+	if _cache.has(k):
+		return _cache[k]
+	var b := ModelKit.new(c, false)
+	var n_out := 0
+	for s in mesh.get_surface_count():
+		if not mesh.surface_get_name(s).begins_with("paint"):
+			continue
+		var arr := mesh.surface_get_arrays(s)
+		var V: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var I: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+		for i in range(0, I.size(), 3):
+			var p0 := V[I[i]]
+			var p1 := V[I[i + 1]]
+			var p2 := V[I[i + 2]]
+			var n := (p1 - p0).cross(p2 - p0)
+			if n.length_squared() < 1e-10:
+				continue
+			n = n.normalized()
+			# glTF → Godot: stesso senso dei vertici del motore (orario visto da fuori): la normale geometrica è opposta
+			n = -n
+			if ny > 0.0 and absf(n.y) > ny:
+				continue
+			if ny < 0.0 and n.y < -ny:
+				continue
+			if min_x > 0.0 and minf(absf(p0.x), minf(absf(p1.x), absf(p2.x))) < min_x:
+				continue
+			var poly: Array = [p0, p1, p2]
+			for side in 2:
+				var res: Array = []
+				var lim := lo if side == 0 else hi
+				for q in poly.size():
+					var a: Vector3 = poly[q]
+					var d: Vector3 = poly[(q + 1) % poly.size()]
+					var ia: bool = (a[axis] >= lim) if side == 0 else (a[axis] <= lim)
+					var id: bool = (d[axis] >= lim) if side == 0 else (d[axis] <= lim)
+					if ia:
+						res.append(a)
+					if ia != id:
+						res.append(a.lerp(d, (lim - a[axis]) / (d[axis] - a[axis])))
+				poly = res
+				if poly.size() < 3:
+					break
+			if poly.size() < 3:
+				continue
+			var offv := n * 0.012
+			for q in range(1, poly.size() - 1):
+				b.tri_s("faction", (poly[0] as Vector3) + offv, (poly[q] as Vector3) + offv, (poly[q + 1] as Vector3) + offv, n, n, n, b.fac)
+				n_out += 1
+	var out: ArrayMesh = b.commit() if n_out > 0 else null
+	if out != null:
+		out.set_meta("tris", n_out)
+	_cache[k] = out
+	return out
+
+## Posto libero sul tetto di una torretta per il pannello di riconoscimento: [centro, dimensioni (x, z)] oppure [] se non c'è.
+## Il tetto è la quota con più area rivolta in alto (preferendo i piani alti); il pannello va dove i suoi angoli poggiano sul
+## tetto e nessun vertice (portelli, mirini, antenne) sporge dentro la sua impronta. Tra i posti liberi, il più vicino al centro.
+static func _ext_roof(mesh: Mesh) -> Array:
+	if mesh.has_meta("roof"):
+		return mesh.get_meta("roof")
+	var hs := {}
+	var tris: Array = []
+	var verts := PackedVector3Array()
+	for s in mesh.get_surface_count():
+		var arr := mesh.surface_get_arrays(s)
+		var V: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var I: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+		verts.append_array(V)
+		for i in range(0, I.size(), 3):
+			var a := V[I[i]]
+			var b := V[I[i + 1]]
+			var c := V[I[i + 2]]
+			var n := (b - a).cross(c - a)
+			var area := n.length() * 0.5
+			if area < 1e-6 or absf(n.y) / (area * 2.0) < 0.97:
+				continue
+			var k := int(round((a.y + b.y + c.y) / 3.0 / 0.05))
+			hs[k] = float(hs.get(k, 0.0)) + area
+			tris.append([k, a, b, c])
+	var best := 0
+	var ba := -1.0
+	for k in hs:
+		var sc: float = float(hs[k]) * (1.0 + float(k) * 0.05)
+		if sc > ba:
+			ba = sc
+			best = k
+	var roof: Array = []
+	for t in tris:
+		if int(t[0]) == best:
+			roof.append(t)
+	var y := float(best) * 0.05
+	var high: Array = []   # sporgenze sopra il tetto
+	for v in verts:
+		if v.y > y + 0.04:
+			high.append(Vector2(v.x, v.z))
+	var bbx := mesh.get_aabb()
+	var out: Array = []
+	for size_v in [Vector2(1.1, 0.8), Vector2(0.8, 0.6), Vector2(0.55, 0.42), Vector2(0.4, 0.3)]:
+		var size: Vector2 = size_v
+		var found := false
+		var bp := Vector2.ZERO
+		var bs := -1e9
+		var z := bbx.end.z
+		while z > bbx.position.z:
+			var x := bbx.position.x
+			while x < bbx.end.x:
+				var ok := true
+				for q in [Vector2(0, 0), Vector2(-0.5, -0.5), Vector2(0.5, -0.5), Vector2(0.5, 0.5), Vector2(-0.5, 0.5)]:
+					var p: Vector2 = Vector2(x, z) + (q as Vector2) * size
+					var inside := false
+					for t in roof:
+						var ta: Vector3 = t[1]
+						var tb: Vector3 = t[2]
+						var tc: Vector3 = t[3]
+						if Geometry2D.point_is_inside_triangle(p, Vector2(ta.x, ta.z), Vector2(tb.x, tb.z), Vector2(tc.x, tc.z)):
+							inside = true
+							break
+					if not inside:
+						ok = false
+						break
+				if ok:
+					for hv in high:
+						var h: Vector2 = hv
+						if absf(h.x - x) < size.x * 0.5 + 0.04 and absf(h.y - z) < size.y * 0.5 + 0.04:
+							ok = false
+							break
+				if ok:
+					var sc2 := -absf(z - bbx.get_center().z) - absf(x) * 1.5   # vicino al centro della torretta
+					if sc2 > bs:
+						bs = sc2
+						bp = Vector2(x, z)
+						found = true
+				x += 0.1
+			z -= 0.1
+		if found:
+			out = [Vector3(bp.x, y, bp.y), size]
+			break
+	mesh.set_meta("roof", out)
+	return out
+
+## Mesh di una parte del modello esterno con i colori di ModelKit (vernice della fazione, fango in basso, relitto) e i
+## materiali condivisi; in cache come le mesh in codice. `off` = posizione della parte nello spazio del modello (altezza del fango).
+static func _ext_mesh(path: String, part: String, src: Mesh, kind: String, c: Color, burnt: bool, tint: float, off: Vector3) -> ArrayMesh:
+	var k := "ext|%s|%s|%s|%s|%.2f|f%d" % [path, part, c.to_html(false), burnt, tint, _fac]
+	if _cache.has(k):
+		return _cache[k]
+	var b := ModelKit.new(c, burnt)
+	b.style = _fac
+	b.camo = 1.0
+	var ground := not (kind in ["heli", "jet", "drone"])
+	b.dirt_h = 1.15 if ground else 0.0
+	var base := OLIVE if ground else (HELI_GREEN if kind == "heli" else (DRONE_GRAY if kind == "drone" else AIR_GRAY))
+	var pc := _paint(base, c, tint)
+	var im := ImporterMesh.new()
+	var tris := 0
+	for s in src.get_surface_count():
+		var role := ""
+		var sm := src.surface_get_material(s)
+		if sm != null:
+			role = sm.resource_name
+		if role == "":
+			role = "paint"
+		var arr := src.surface_get_arrays(s)
+		var V: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var C = arr[Mesh.ARRAY_COLOR]
+		var col: Color
+		match role:
+			"metal": col = GUNMETAL
+			"track": col = TRACK
+			"glass": col = GLASS
+			"rubber": col = DARK
+			"matte": col = CLOTH
+			"faction": col = b.fac
+			_: col = pc
+		var has_c: bool = C != null and (C as PackedColorArray).size() == V.size()
+		var cols := PackedColorArray()
+		cols.resize(V.size())
+		for i in V.size():
+			var m: float = (C as PackedColorArray)[i].r if has_c else 1.0
+			var cc := Color(col.r * m, col.g * m, col.b * m, 1.0) if role != "faction" else col
+			cols[i] = b._vcol(role, cc, V[i] + off)
+		var out := []
+		out.resize(Mesh.ARRAY_MAX)
+		out[Mesh.ARRAY_VERTEX] = V
+		out[Mesh.ARRAY_NORMAL] = arr[Mesh.ARRAY_NORMAL]
+		out[Mesh.ARRAY_COLOR] = cols
+		out[Mesh.ARRAY_INDEX] = arr[Mesh.ARRAY_INDEX]
+		tris += (arr[Mesh.ARRAY_INDEX] as PackedInt32Array).size() / 3
+		im.add_surface(Mesh.PRIMITIVE_TRIANGLES, out, [], {}, ModelKit.mat(b._key(role)), role)
+	if tris > 600:
+		im.generate_lods(25.0, 60.0, [])
+	var mesh := im.get_mesh()
+	mesh.set_meta("tris", tris)
+	_cache[k] = mesh
+	return mesh
 
 static func _make_generic(root: Node3D, kind: String, c: Color, lod: int, burnt: bool, tint: float) -> void:
 	match kind:

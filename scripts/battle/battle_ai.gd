@@ -7,6 +7,9 @@ extends RefCounted
 ## artiglieria lontana che spara su ciò che viene avvistato (o sui fantasmi recenti), contraerea al seguito.
 ## Difensore: fanteria nascosta in boschi/città davanti alla propria linea (imboscate), carri in posizione dietro di lei,
 ## artiglieria in fondo; contrattacca solo se nettamente più forte.
+## Notte 3 (stile R.U.S.E.): l'IA conosce i CONTATTI (posizione senza tipo, `u.known`) oltre agli identificati (`u.spotted`);
+## entrambi i lati mandano distaccamenti sugli obiettivi (role "cap": presidio, conquista, contrattacco su quelli minacciati
+## o perduti), i carri del difensore non restano fermi, l'IA chiama l'attacco aereo annunciato.
 
 const REORDER := 5.0
 const DEF_VEH_COVER := false   # true: l'IA difensiva mette carri e contraerea defilati nei boschi (difesa molto più forte)
@@ -23,7 +26,8 @@ static func think(s, si: int) -> void:
 	var E := 1 - si
 	var dirx := 1.0 if si == 0 else -1.0
 	var mine: Array = []
-	var kground: Array = []
+	var kground: Array = []     # nemici a terra identificati (tipo noto)
+	var kcont: Array = []       # contatti "?": posizione nota, tipo ignoto
 	var kaa: Array = []
 	var mx := 0.0
 	var my := 0.0
@@ -31,10 +35,14 @@ static func think(s, si: int) -> void:
 		if u.dead:
 			continue
 		if u.side == E:
-			if u.spotted[si] and not u.air:
+			if u.air:
+				continue
+			if u.spotted[si]:
 				kground.append(u)
 				if u.type == "aa":
 					kaa.append(u)
+			elif u.known[si]:
+				kcont.append(u)
 		elif not u.stat:
 			mine.append(u); mx += u.x; my += u.y
 	if mine.is_empty():
@@ -46,6 +54,8 @@ static func think(s, si: int) -> void:
 	var kw := 0.0
 	for e in kground:
 		kx += e.x; ky += e.y; kw += 1.0
+	for e in kcont:
+		kx += e.x * 0.7; ky += e.y * 0.7; kw += 0.7
 	for g in s.ghosts[si]:
 		if g["type"] == "heli" or g["type"] == "jet" or g["type"] == "drone":
 			continue
@@ -66,6 +76,11 @@ static func think(s, si: int) -> void:
 		var p = s._cluster(si)
 		if p != null:
 			s.barrage(si, p.x, p.y)
+	# attacco aereo annunciato sul gruppo nemico più denso (notte 3)
+	if int(S["air_uses"]) > 0 and s.time > BattleRules.AI_AIR_T:
+		var pa = s._cluster(si)
+		if pa != null:
+			s.air_strike_announced(si, pa.x, pa.y)
 	if s.hs >= 0:
 		s._ai_smoke(si)
 	if A["phase"] == "start":
@@ -88,12 +103,18 @@ static func think(s, si: int) -> void:
 	if reorder:
 		A["re"] = s.time + REORDER
 	var ph: String = A["phase"]
-	if ph == "scout" and (s.time - float(A["t0"]) > 18.0 or not kground.is_empty()):
+	if ph == "scout" and (s.time - float(A["t0"]) > 8.0 or not kground.is_empty() or not kcont.is_empty()):
 		ph = "advance"; A["phase"] = ph; reorder = true
-	if ph == "defend" and s.time - float(A["t0"]) > 30.0 and s.power(si) > s.power(E) * 1.6:
+	# notte 3 — niente tempi morti: se da un po' nessuno si spara (o il nemico è allo sbando) chi è più forte va a cercare lo scontro
+	var lull: bool = s.time - s.last_dmg > 8.0
+	A["press"] = s.rout[E] or (lull and s.time > 20.0) or (A["phase"] != "defend" and A["phase"] != "start" and kground.is_empty() and s.time > 12.0)
+	if ph == "defend" and s.time - float(A["t0"]) > 30.0 and (s.power(si) > s.power(E) * 1.6 or ((s.rout[E] or lull) and s.power(si) > s.power(E) * 1.15)):
 		ph = "advance"; A["phase"] = ph; reorder = true
 		for u in mine:
 			u.role = ""; u.hold = false
+	if reorder or not A.get("caps0", false):
+		A["caps0"] = true
+		_obj_tasks(s, si, mine, dirx, ph == "defend")
 	if ph == "defend":
 		_defend(s, si, mine, kground, kaa, dirx, reorder, A, mx, my)
 	else:
@@ -115,6 +136,125 @@ static func _next_objective(s, si: int, mx: float, my: float):
 	return best
 
 
+# ---------------------------------------------------------------------------- obiettivi (notte 3)
+## Distaccamenti sugli obiettivi (role "cap", `u.obj` = indice): presidio di quelli tenuti (1 unità), conquista di quelli
+## neutri (2) o nemici (3), contrattacco su quelli propri dove il nemico ha messo piede (3). Si usano le unità più vicine
+## (fanteria e carri; non artiglieria/contraerea/velivoli), fino a metà (attaccante) o al 60% (difensore) della forza di terra.
+static func _obj_tasks(s, si: int, mine: Array, dirx: float, defend := false) -> void:
+	if s.objectives.is_empty():
+		return
+	var E := 1 - si
+	var pool: Array = []
+	var gfront := -1e9
+	for u in mine:
+		if u.air or u.type == "art" or u.type == "aa" or u.role == "flank" or u.role == "flank2" or u.role == "retreat":
+			continue
+		pool.append(u)
+		gfront = maxf(gfront, u.x * dirx)
+	if pool.is_empty():
+		return
+	var cap_max := maxi(1, int(pool.size() * (0.45 if defend else 0.5)))
+	var small: bool = pool.size() < 12   # eserciti piccoli: un solo reparto per obiettivo neutro
+	# chi sta perdendo ai punti (l'attaccante deve tenerne DI PIÙ, al difensore basta il pari) butta tutto sugli obiettivi:
+	# contrattacco generale invece di aspettare lo scadere del tempo
+	var held: Array = s.objectives_held()
+	var losing: bool = s.time > 45.0 and ((si == 0 and int(held[0]) <= int(held[1])) or (si == 1 and int(held[0]) > int(held[1])))
+	if losing:
+		cap_max = pool.size()
+	var needs: Array = []   # [priorità, indice, quante unità]
+	var need_of := {}
+	for i in s.objectives.size():
+		var o: Dictionary = s.objectives[i]
+		var own := int(o["owner"])
+		var hold: Array = o["hold"]
+		var ahead: float = float(o["x"]) * dirx - gfront
+		var need := 0
+		var prio := 0.0
+		if own == si:
+			if bool(o["contested"]) or float(hold[E]) > 0.0:
+				need = 3; prio = 3.0     # contrattacco: il nemico è sull'obiettivo
+			else:
+				need = 1; prio = 1.0     # presidio
+		else:
+			if ahead > 1500.0:
+				continue                 # troppo in profondità per ora
+			if defend and not losing and (float(o["x"]) - s.W * 0.42) * dirx > 0.0:
+				continue                 # in difesa non si va a prendere gli obiettivi dalla parte dell'attaccante
+			need = (1 if small else 2) if own < 0 else (2 if small else 3)
+			if losing:
+				need += 2
+			prio = 2.0 if own < 0 else 2.5
+			if int(o["home"]) == si:
+				prio += 0.6              # obiettivo di casa perduto: riprenderlo subito
+		prio -= maxf(0.0, ahead) / 4000.0
+		needs.append([prio, i, need])
+		need_of[i] = need
+	needs.sort_custom(func(a, b): return a[0] > b[0])
+	var cnt := {}
+	var ncap := 0
+	for u in pool:
+		if u.role != "cap":
+			continue
+		var k: int = u.obj
+		var c: int = int(cnt.get(k, 0))
+		if not need_of.has(k) or c >= int(need_of[k]):
+			u.role = ""; u.obj = -1; u.hold = false
+		else:
+			cnt[k] = c + 1; ncap += 1
+	for nd in needs:
+		var k: int = nd[1]
+		var o: Dictionary = s.objectives[k]
+		var have: int = int(cnt.get(k, 0))
+		var ox: float = o["x"]
+		var oy: float = o["y"]
+		while have < int(nd[2]) and ncap < cap_max:
+			var best = null
+			var bd := 2800.0 * 2800.0
+			for u in pool:
+				if u.role == "cap":
+					continue
+				var d: float = (u.x - ox) * (u.x - ox) + (u.y - oy) * (u.y - oy)
+				if u.type != "inf" and int(nd[2]) < 3:
+					d *= 2.2             # presidi e conquiste: meglio la fanteria; i carri per i contrattacchi
+				if d < bd:
+					bd = d; best = u
+			if best == null:
+				break
+			var p := _cap_point(s, best, ox, oy, have, dirx)
+			best.role = "cap"; best.obj = k; best.rx = p.x; best.ry = p.y; best.hold = false
+			s.order_unit(best, AMOVE, p.x, p.y, null)
+			have += 1; ncap += 1
+
+
+## Punto in cui un'unità tiene l'obiettivo: la fanteria in una copertura dentro il raggio (se c'è), i mezzi allo scoperto.
+static func _cap_point(s, u, ox: float, oy: float, n: int, dirx: float) -> Vector2:
+	if u.type == "inf":
+		var near: Array = []
+		var r2: float = (BattleRules.OBJ_R * 0.92) * (BattleRules.OBJ_R * 0.92)
+		for p in s.cover_spots:
+			var d: float = (p.x - ox) * (p.x - ox) + (p.y - oy) * (p.y - oy)
+			if d < r2:
+				near.append([d, p])
+		if not near.is_empty():
+			near.sort_custom(func(a, b): return a[0] < b[0])
+			return near[mini(n, near.size() - 1)][1]
+		return Vector2(clampf(ox - dirx * 50.0, 60.0, s.W - 60.0), clampf(oy + (n - 1) * 70.0, s.TOP + 60.0, s.BOTTOM - 60.0))
+	return _open_point(s, ox - dirx * 110.0, oy + (n - 1) * 90.0)
+
+
+## Unità assegnata a un obiettivo: lo raggiunge in movimento d'attacco e lo tiene (mantieni posizione).
+static func _cap_unit(s, u, reorder: bool) -> void:
+	var dx: float = u.x - u.rx
+	var dy: float = u.y - u.ry
+	if dx * dx + dy * dy > 60.0 * 60.0:
+		if u.order == IDLE and (reorder or u.tgt == null):
+			u.hold = false
+			s.order_unit(u, AMOVE, u.rx, u.ry, null)
+	elif u.order == IDLE and not u.hold:
+		s.order_unit(u, IDLE, u.x, u.y, null)
+		u.hold = true
+
+
 # ---------------------------------------------------------------------------- difesa
 static func _defend(s, si: int, mine: Array, kground: Array, kaa: Array, dirx: float, reorder: bool, A: Dictionary, mx: float, my: float) -> void:
 	var front: float = A["front0"]
@@ -124,7 +264,9 @@ static func _defend(s, si: int, mine: Array, kground: Array, kaa: Array, dirx: f
 		# il difensore guidato dall'IA ha avuto il tempo di prepararsi: parte già in posizione
 		if s.time < 2.0 and not s.sides[si]["human"]:
 			for u in mine:
-				if u.role == "post" and not u.air:
+				# i presidi degli obiettivi dalla propria parte del campo (e al centro) sono già sul posto
+				var home_cap: bool = u.role == "cap" and u.obj >= 0 and (float(s.objectives[u.obj]["x"]) - s.W * 0.45) * dirx <= 0.0
+				if (u.role == "post" or home_cap) and not u.air:
 					u.x = u.rx; u.y = u.ry
 					s._push_out(u)
 					u.rx = u.x; u.ry = u.y
@@ -140,6 +282,9 @@ static func _defend(s, si: int, mine: Array, kground: Array, kaa: Array, dirx: f
 		elif u.type == "jet":
 			_jet(s, u, kground, mx, my, dirx, reorder)
 		else:
+			if u.role == "cap":
+				_cap_unit(s, u, reorder)
+				continue
 			if u.type == "art" and _art_ghost_fire(s, u):
 				continue
 			if u.role != "post":
@@ -149,7 +294,9 @@ static func _defend(s, si: int, mine: Array, kground: Array, kaa: Array, dirx: f
 			if dx * dx + dy * dy > 45.0 * 45.0:
 				if u.order == IDLE and (reorder or u.tgt == null):
 					s.order_unit(u, MOVE, u.rx, u.ry, null)
-			elif not u.hold and u.order == IDLE:
+			elif not u.hold and u.order == IDLE and u.type != "tank":
+				# la fanteria e i pezzi tengono la posizione; i carri restano liberi di manovrare (fuoco e movimento
+				# entro il guinzaglio dal proprio posto: niente più "tutti fermi nel bosco")
 				s.order_unit(u, IDLE, u.x, u.y, null)
 				u.hold = true
 
@@ -157,7 +304,7 @@ static func _defend(s, si: int, mine: Array, kground: Array, kaa: Array, dirx: f
 static func _assign_posts(s, si: int, mine: Array, front: float, dirx: float) -> void:
 	var spots: Array = s.cover_spots
 	var used := {}
-	var infs := mine.filter(func(u): return u.type == "inf")
+	var infs := mine.filter(func(u): return u.type == "inf" and u.role != "cap")
 	infs.sort_custom(func(a, b): return a.y < b.y)
 	for u in infs:
 		var best := -1
@@ -183,11 +330,11 @@ static func _assign_posts(s, si: int, mine: Array, front: float, dirx: float) ->
 		else:
 			u.rx = u.x + dirx * 150.0; u.ry = u.y
 	for u in mine:
-		if u.role == "post" or u.air:
+		if u.role == "post" or u.role == "cap" or u.air:
 			continue
 		var tx: float = u.x
 		match u.type:
-			"tank": tx = front - dirx * 350.0
+			"tank": tx = front + dirx * 100.0    # notte 3: i carri stanno in linea con la fanteria avanzata e coprono gli obiettivi contesi
 			"aa": tx = front - dirx * 600.0
 			"art": tx = (s.W - 450.0) if si == 1 else 450.0
 		var p := _open_point(s, tx, u.y)
@@ -259,6 +406,9 @@ static func _attack(s, si: int, mine: Array, kground: Array, kaa: Array, ex: flo
 	A["ground_front"] = ground_front * dirx if ground_front > -1e8 else mx
 	var taken := {}
 	for u in mine:
+		if u.role == "cap":
+			_cap_unit(s, u, reorder)
+			continue
 		match u.type:
 			"inf":
 				_inf_attack(s, u, kground, ex, ey, my, dirx, scout, reorder, A, taken)
@@ -304,6 +454,16 @@ static func _inf_attack(s, u, kground: Array, ex: float, ey: float, my: float, d
 		if u.order != IDLE:
 			s.order_unit(u, IDLE, u.x, u.y, null)  # resta in copertura e spara
 		return
+	# pressione (tempi morti / nemico allo sbando): si va a stanare il nemico noto più vicino, di copertura in copertura
+	if bool(A.get("press", false)):
+		var na = _nearest_known(s, u)
+		if na != null:
+			var q2 = _near_cover(s, na.x - dirx * 150.0, na.y, 260.0, taken)
+			if q2 != null:
+				s.order_unit(u, AMOVE, q2.x, q2.y, null)
+			else:
+				s.order_unit(u, AMOVE, na.x - dirx * 120.0, na.y, null)
+			return
 	# corazzati nemici noti a portata: niente balzi allo scoperto, la fanteria aspetta in copertura che i carri amici li ingaggino
 	var kt := kground.filter(func(e): return e.type == "tank")
 	var nt := _nearest(kt, u.x, u.y)
@@ -401,7 +561,13 @@ static func _tank_attack(s, u, kground: Array, ex: float, ey: float, my: float, 
 		var p := _open_point(s, ref.x + vx / vl * u.range_ * 0.85, ref.y + vy / vl * u.range_ * 0.85)
 		s.order_unit(u, AMOVE, p.x, p.y, null)
 		return
-	# nessun nemico noto: dietro lo schermo della fanteria (che avvista e assorbe le imboscate)
+	# nessun nemico identificato: sotto pressione si va sul contatto più vicino, altrimenti si avanza nel settore
+	if bool(A.get("press", false)):
+		var na = _nearest_known(s, u)
+		if na != null:
+			var pp := _open_point(s, na.x - dirx * 300.0, na.y)
+			s.order_unit(u, AMOVE, pp.x, pp.y, null)
+			return
 	var tx: float = u.x + dirx * 500.0
 	if (tx - u.x) * dirx > 80.0:
 		var p := _open_point(s, tx, lane)
@@ -519,6 +685,19 @@ static func _jet(s, u, kground: Array, mx: float, my: float, dirx: float, reorde
 
 
 # ---------------------------------------------------------------------------- utilità
+## Nemico a terra noto (identificato o contatto "?") più vicino all'unità; null se nessuno.
+static func _nearest_known(s, u):
+	var best = null
+	var bd := 1e18
+	for e in s._elist[1 - u.side]:
+		if e.dead or e.air or not e.known[u.side]:
+			continue
+		var d: float = (e.x - u.x) * (e.x - u.x) + (e.y - u.y) * (e.y - u.y)
+		if d < bd:
+			bd = d; best = e
+	return best
+
+
 static func _nearest(list: Array, x: float, y: float) -> Array:
 	var best = null
 	var bd := 1e18

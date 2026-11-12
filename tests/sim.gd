@@ -3,6 +3,7 @@ extends SceneTree
 ## FASE 6 (turni): le IA giocano a turni senza ritardo (ai_step_delay 0); la durata è in round.
 ## Uso: node tools/godot_run.js --timeout=900 -- --headless --path . --script tests/sim.gd [-- --case=N --seed=S --passive=0|1 --rounds=R --fog=0|1]
 ##   --bal=conquista --seeds=1-24: bilanciamento con 4 IA (fazioni ruotate), tabella delle vittorie per fazione.
+##   con --bal: --classic=1 = regole di prima della notte 3 (niente ordini/eventi, 1 attacco, neutrali pesanti); --apt=N attacchi per turno.
 ##   senza argomenti: tutti i casi × seed 11,12 + prova "umano passivo".
 ## Stampa vincitore, motivo, round, scambi/golpe/missili/sabotaggi, NaN ed errori (contati con un Logger).
 
@@ -90,6 +91,10 @@ func _run() -> void:
 	var CombatS: Script = load("res://scripts/core/combat.gd")
 	if _arg("tactical", "1") == "0" and "tactical" in CombatS:
 		CombatS.tactical = false   # risoluzione con la formula (più veloce, per i confronti)
+	if _arg("mbonus", "") != "":
+		load("res://scripts/core/ai.gd").mission_bonus = float(_arg("mbonus", "5"))
+	if _arg("surprise", "") != "":
+		load("res://scripts/core/ai.gd").surprise_mul = float(_arg("surprise", "1"))
 	var GameScript: Script = load(_arg("game", "res://scripts/core/game.gd"))   # --game=: nucleo alternativo (confronti)
 	if GameScript == null or not GameScript.can_instantiate():
 		print("sim: game.gd non si carica")
@@ -109,6 +114,19 @@ func _run() -> void:
 				"seed": seed_v, "auto_battles": true, "ask_defense": false, "fog": fog, "ai_step_delay": 0.0}
 			if scen != "":
 				opts3["scenario"] = scen
+			if _arg("classic", "0") == "1":   # regole di prima della notte 3 (confronto di bilanciamento)
+				opts3["missions"] = false
+				opts3["events"] = false
+				opts3["attacks_per_turn"] = 1
+			if _arg("apt", "0") != "0":
+				opts3["attacks_per_turn"] = int(_arg("apt", "0"))
+			# leve singole (per isolare l'effetto di ogni regola della notte 3)
+			if _arg("missions", "") != "":
+				opts3["missions"] = _arg("missions", "1") == "1"
+			if _arg("events", "") != "":
+				opts3["events"] = _arg("events", "1") == "1"
+			if _arg("neutral", "") == "light":   # presidi neutrali leggeri (provati e scartati nella notte 3)
+				opts3["neutral_start"] = root.get_node("Data").NEUTRAL_START_LIGHT
 			if _arg("ai", "") != "":   # IA alternativa (confronti di bilanciamento)
 				opts3["ai_script"] = load(_arg("ai", ""))
 			_play(GameScript, opts3, "%s seed %d" % [scen if scen != "" else bal, seed_v], max_min, -1)

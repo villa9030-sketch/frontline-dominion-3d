@@ -359,7 +359,7 @@ func _block_edges(p: Vector2, w: float, d: float, car_k: float) -> void:
 				var lp := base + out * 0.7
 				# il braccio del lampione guarda verso la strada
 				T._lm_add("lamp", _ground(lp.x, lp.y, 0.05), atan2(out.x, out.y), Vector3.ONE, Color(1, 1, 1))
-				T.add_glow(lp + out * 1.4, 12.0, 0.8, Color(1.0, 0.85, 0.6))
+				T.add_glow(lp + out * 1.4, 12.0, 0.8, Color(1.0, 0.85, 0.6), 5.8)
 			elif rng.randf() < car_k:
 				var cp := base + out * 2.1
 				if not (T.sim.sea and T.height(cp.x, cp.y) < 1.2):

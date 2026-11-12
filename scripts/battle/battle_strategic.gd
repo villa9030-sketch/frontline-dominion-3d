@@ -58,8 +58,8 @@ func _update_influence() -> void:
 	for u in sim.units:
 		if u.dead or u.air:
 			continue
-		if not b.is_visible_unit(u):
-			continue
+		if not b.is_visible_unit(u) and not (b.has_method("is_contact_unit") and b.is_contact_unit(u)):
+			continue   # notte 3: anche i contatti "?" pesano sul fronte (posizione nota)
 		var gx := clampi(int(u.x / sim.W * GW), 0, GW - 1)
 		var gy := clampi(int(u.y / sim.H * GH), 0, GH - 1)
 		var w := clampf(u.hp / u.hp_max, 0.3, 1.0) * (2.5 if u.stat else 1.0)

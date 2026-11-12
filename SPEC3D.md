@@ -583,3 +583,173 @@ Proprietà: `battle_terrain.gd`, `battle_landscape.gd`, `battle_decor.gd`, `batt
 - `Battle3D`: alla fine (`_end_wait` o «Continua») **uscita cinematica** `OUTRO_T = 1.6 s`: la telecamera risale a `max_dist`, poi
   `finished`. `main._after_battle`: a nero, `map.rise_from(terr)` (vista bassa sul territorio che risale alla vista di prima), riapre.
 - Velivoli: gettone sempre visibile (anche sotto 55 m), mai nascosto dall'occlusione.
+
+---
+# Notte 3 — ritmo del tabellone (agente TABELLONE; diagnosi e numeri in `docs/notte3_tabellone.md`)
+Obiettivo: niente «nascondino» anche sul tabellone, una decisione interessante a ogni turno, meno attese.
+## Regole nuove (nucleo: `game.gd`, `ai.gd`, `data.gd`) — SAVE_VERSION 4 (v2 e v3 migrati)
+- **Nebbia predefinita: nessuna** (`menu_opts.fog_mode = "none"`; leggera e totale restano opzioni). **Carte inganno**
+  (`Data.FOG_OPS` = finta, silenzio, ricognizione) giocabili **solo con la nebbia**: `game.op_available(op)`; senza nebbia
+  `play_cards` le rifiuta, l'interfaccia non le mostra, `visible_forces` ignora eventuali decoy/silence residui.
+- **Attacchi per turno** `game.attacks_max()` / `attacks_left()` / `attacks_done` (in `turn_status()`: `attacks_left`, `attacks_max`);
+  `attack_used` resta e vale `attacks_done >= attacks_max()`. Regola: `Data.TURN_RULES.attacks` = 1; nelle partite libere durante
+  la **tregua iniziale** `truce_attacks` = 2 (solo i neutrali sono attaccabili: avvio più rapido); +1 nel round dell'evento
+  «Finestra di bel tempo». `opts.attacks_per_turn` (> 0) fissa il numero (test e proposte). Negli scenari sempre 1.
+- Presidi dei neutrali iniziali **invariati** (`Data.NEUTRAL_START`); la variante leggera (`NEUTRAL_START_LIGHT`, `opts.neutral_start`)
+  è stata provata e scartata (sbilancia le fazioni: FO dal 38 % allo 0–10 % di vittorie su 40 partite).
+- **Ordini del comando** (`opts.missions`, accesi nelle partite libere, spenti negli scenari): `players[i]["mission"]` =
+  `null | {terr, until, reward, born}`; `game.mission_of(p)`, `mission_text(p)`. A ogni inizio turno, se non ce n'è uno, ne nasce
+  uno: «conquista X entro il round N» (N = round + `MISSION_ROUNDS` − 1 = 3 turni), X confinante, non un QG, non di un partner,
+  neutrale durante la tregua, scelto tra i 3 migliori (valore, continente, fattibilità). Premio (`MISSION_REWARDS`): carta
+  Comando, 4 FAN nel pool, o 150 $. Eventi `objective_new {player, terr, until, reward}`, `objective_done`, `objective_failed`.
+  Vale anche per le IA (stesso premio); l'IA non insegue il bersaglio (`AIController.mission_bonus` = 0: con 5 o 2 il
+  bilanciamento delle fazioni si spostava).
+- **Eventi mondiali** (`opts.events`, come sopra): `game.world_event` = `null | {id, terr, round, born}`, `world_event_text()`.
+  Dal round `WORLD_EVENT_FIRST` (3), uno ogni `WORLD_EVENT_EVERY` (4) round, mai lo stesso due volte di fila (`Data.WORLD_EVENTS`):
+  territorio premio `convoglio` (250 $), `giacimento` (80 petrolio + 120 acciaio), `archivio` (una carta) → chi controlla il
+  territorio (conteso, non un QG) all'inizio del round `round` (+`WORLD_EVENT_HOLD` = 2) incassa; `diserzioni` (presidio di un
+  neutrale dimezzato, subito); `offensiva` «Finestra di bel tempo» (un attacco in più per tutti in quel round). Annunciati con
+  `headline` e con l'evento `world_event {id, terr, round, stage: "start"|"end", [winner]}`. IA: `_value` +6 sul territorio premio.
+- **Minacce annunciate**: `game.intents[p]` = `null | {from, to, round}`; a fine turno ogni IA (`ai._announce`) valuta l'attacco
+  contro un giocatore che farebbe al prossimo turno con i rinforzi attesi (stessa `_choose_attack`) e lo dichiara con
+  `game.set_intent(p, from, to)` (evento `threat {player, from, to, target_owner}`). Al turno dopo tende a mantenerlo (punteggio
+  ×1.8), ma rinuncia se non è più un buon attacco. `game.threats_for(viewer, all = false)` → `[{player, from, to, att, def}]`
+  (con la nebbia solo se `from` è in vista; niente con un patto). L'intento si toglie quando tocca di nuovo a quell'IA.
+- **Segnali sul tabellone**: nelle partite libere `game.scenario_targets` = [territorio dell'ordine del giocatore, territorio
+  premio] (la mappa li disegna già come territori chiave). `map.set_threats(list)` è chiesto a GRAFICA (`docs/notte3_richieste.md`).
+- **Ritmo dei turni IA** (`Game.update`): l'attesa dopo un'azione è `ai_step_delay` × peso: 1 dopo un attacco in vista, 0.6 dopo
+  uno spostamento, 0.3 dopo schieramenti/fortificazioni/cambi di fase/attacchi fuori vista, 0.5 all'inizio del turno.
+- RNG separato `_xrng` per ordini ed eventi (salvato): non sposta la sequenza casuale della partita.
+## Interfaccia (`main.gd`, `hud.gd`, `menu.gd`, `modal.gd`)
+- **Rapporto «Dall'ultimo turno»** (`main._recap`, `recap_lines()`, `hud.show_recap(lines, more)` / `hide_recap()`): all'inizio
+  del turno del giocatore, in alto a sinistra, fino a 6 righe cliccabili (inquadrano il territorio): prima le minacce annunciate,
+  poi ciò che lo riguarda (territori persi/difesi, missili, sabotaggi, golpe), poi titoli (continenti, eventi) e conquiste altrui.
+- **Riquadro ORDINI**: riga `goal` (`main.goal_text()`): «★ ORDINE DEL COMANDO …» e «◆ EVENTO …»; nota sugli attacchi rimasti
+  quando sono più di uno. Pulsante rosso in alto «MINACCIA · territorio» (`hud.set_threats` con voci `turn: true`), tooltip del
+  territorio con ordine/premio/minaccia. Carte: le operazioni non disponibili (inganni senza nebbia) non compaiono.
+- Guida F1: sezione «Ordini, eventi e minacce», nebbia e battaglie aggiornate.
+## Test e diagnosi
+- `tests/test_core.gd` → `test_pace` (tregua 2 attacchi, ordini, eventi, minacce, inganni solo con nebbia, IA vera);
+  `tests/test_save.gd` → `test_save_v4` (andata e ritorno, partite identiche dopo 5 round, migrazione v3).
+- `tests/diag_tabellone.gd`: partite tutte IA misurate dal posto 0 (opzioni per turno, stalli, novità per round, minacce
+  mantenute, primi 5 round…); `--classic=1` = regole di prima della notte 3, `--apt=N` = N attacchi per turno.
+  `tests/sim.gd --bal=conquista` accetta `--classic=1`, `--apt=N`, `--missions=0|1`, `--events=0|1`, `--neutral=light`, `--surprise=X`
+  (`AIController.surprise_mul`) per isolare l'effetto di ogni regola sul bilanciamento.
+
+---
+# Notte 3 — grafica: mezzi veri, segni dello scontro, paesi (agente GRAFICA, 2026-11-11/12)
+Resoconto e misure: `docs/notte3_grafica.md`. File: `scripts/models/unit_models.gd`, `model_gallery.gd`, `assets/models/*`,
+`scripts/battle/battle_signs.gd` (nuovo), `battle_marks.gd`, `battle_terrain.gd`, `battle_landscape.gd`, `battle_decor.gd`,
+`battle_props.gd`, `terrain_ground.gdshader`, `scripts/map/world_map.gd`. Nessuna modifica a battle3d/battle_hud/main.
+
+## Modelli esterni dei mezzi (`assets/models/*.glb`, crediti in `assets/models/LICENZA.txt`)
+- `UnitModels.build/miniature/wreck` cercano, in ordine, `assets/models/<kind>_f<fazione>.glb`, poi `assets/models/<kind>.glb`
+  (**non** per le fazioni che costruiscono quel tipo su ruote: `FACTION_STYLES[f].wheeled`), altrimenti il modello in codice.
+  `UnitModels.ext_path(kind, faction)` dice quale file vale; `UnitModels.use_ext = false` (o `--ext=0`) = solo codice.
+- **Contratto del file**: glTF binario, Y su, avanti −Z, origine a terra al centro dello scafo; nodi `Body`, `Turret` >
+  `Barrel` > `Muzzle` (vuoto), `Rotor`, `TailRotor`; ogni superficie ha il materiale chiamato come il **ruolo**
+  (`paint`, `metal`, `track`, `glass`, `rubber`, `matte`, `faction`) e colore di vertice = moltiplicatore di luminosità.
+  Dopo aver aggiunto un file: `--import`. Il modello viene ricolorato da `ModelKit` (vernice e mimetica della fazione con
+  `paint.gdshader`, cingoli che scorrono con `track.gdshader`, fango, usura, relitto) e messo in cache per colore/fazione.
+- **Livelli di dettaglio**: `ImporterMesh.generate_lods` alla costruzione; li sceglie il motore (soglia `mesh_lod_threshold`
+  della qualità). Il parametro `lod` di `build` non cambia la mesh esterna.
+- **Insegne di fazione** generate: pannello sul tetto della torretta (`_ext_roof` trova una zona libera), fascia attorno alla
+  torretta e strisce sui parafanghi "dipinte" ritagliando i triangoli della mesh (`_ext_decal`). Niente numeri tattici.
+- Metadati come i modelli in codice (`kind`, `length`, `height`, `air`, `tris`) più `ext` (percorso del file).
+- Oggi: `tank.glb` (FO e neutrali), `tank_f0.glb` (AAN), `tank_f3.glb` (UL) — Quaternius, CC0; `aa.glb` (Zsky, CC-BY 3.0:
+  AAN, FO, neutrali), `heli.glb` (Zsky, CC-BY 3.0), `jet.glb` (jeremy, CC-BY 3.0) per tutte le fazioni. Convertitore: `tools/modelli/`. CP tiene il carro su ruote in codice. Galleria: `--demo=confronto
+  --pairs=tank:0,tank:1,heli:0` (dietro il modello in codice, davanti quello esterno).
+
+## Segni 3D dello scontro (`BattleSigns`, `battle.marks.signs`)
+Creato da `BattleMarks.setup`, si aggiorna in `_process` leggendo la sim (nessuna chiamata da fare):
+contatti «?» (`Battle3D.is_contact_unit(u)` → sagoma traslucida del colore del lato), rivelazione (`u.reveal_t` → lampo e
+anello tratteggiato che si spegne in `BattleRules.REVEAL_T`; rosso nemici, ambra proprie unità), eventi di `sim.pending`
+(`air` cerchio rosso pulsante + fumogeno; `reinf` frecce dal bordo + polvere), obiettivo minacciato (anello che si riempie
+con `hold[si] / OBJ_HOLD`). `signs.enabled`, `signs.stats = {contacts, reveals, pending, threats}`.
+
+## Paesaggio
+- **Paesi con vie interne** (`BattleLandscape.streets`, mesh `VillageStreets`): via principale + traverse/parallele (maglia nelle
+  cittadine, 2–3 vicoli nei villaggi), case affacciate sulle vie. Strade a strisce con `BattleTerrain.road_material()`
+  (di notte si spengono con il suolo).
+- **Notte**: `add_glow(p, r, k, col, bulb_h)` — con `bulb_h > 0` anche un punto luce (`NightBulbs`, mai sotto ~3 px: i paesi
+  si vedono da lontano); lampioni con palo lungo la via principale, finestre più luminose.
+- **Artico**: fuori dal campo roccia scura sui versanti ripidi, lastre di ghiaccio azzurro, ombre fredde (`ttype == 5`).
+- **Alberi**: il modello vicino porta i LOD automatici (`BattleProps.tree_mesh_lods`), `lod_bias` per qualità in
+  `set_density` (alto 0,8 · medio 0,35 · basso 0,25); `--treelod=0` per il confronto.
+- Collaudo: `--paesi=1` stampa i paesi e libera la telecamera (`--cam=x,z` fuori dal campo); misure: `--fxoff=1` (niente fumo
+  e bagliori), `--segni=0` (niente BattleSigns; `--segni=1` stampa dove sono i contatti), `--textwo=0|1` (scale di texture del suolo).
+
+## Tabellone (`WorldMap`)
+- `set_threats(list)` / `threats()`: minacce annunciate `[{from, to, owner, n, def, turn}]` → frecce persistenti tratteggiate e
+  pulsanti nel colore di `owner` + anello che si stringe sul bersaglio.
+- Logoramento: con `terr.worn > 0` (territorio visibile e presidiato) anello arancione tratteggiato, cerotto a X e pedina
+  sporca. Demo: `--worn=13,15 --threats=20:19`.
+
+---
+# Notte 3 — battaglia: da "nascondino" a scontro (agente BATTAGLIA; numeri in `docs/notte3_battaglia.md`)
+Proprietà: `battle_sim.gd`, `battle_rules.gd`, `battle_ai.gd`, `tests/test_tactics.gd` (`t_contact`, `t_fun`, `t_maps`),
+`tests/test_omogeneita.gd` (parte battaglia); modifiche piccole in `battle3d.gd` (`is_contact_unit`, `_on_announce`, eventi
+`contact`/`announce`), `battle_hud.gd` (gettone «?», lampo "rivelato", rombi sulla minimappa, punteggio obiettivi, conto alla
+rovescia dell'attacco aereo), `battle_strategic.gd` (i contatti pesano sul fronte).
+
+## Contatti e identificazione (sostituisce le regole di visibilità della Fase 5 dove in conflitto)
+- Due livelli per lato: **contatto** `u.known[si]` (POSIZIONE nota, tipo ignoto → gettone «?») e **identificata**
+  `u.spotted[si]` (tipo noto → modello vero, bersaglio del fuoco diretto). Sempre `spotted ⇒ known`. `u.id_once[si]`.
+- Un nemico a terra è un **contatto** se: è identificato; oppure è allo scoperto, in movimento o ha appena sparato (ovunque
+  sul campo, senza linea di vista); oppure è fermo in copertura ma entro `CONTACT_R` = 1500 px (× meteo; elicotteri/droni
+  × `CONTACT_RECON` 1.6) da una qualunque unità del lato; oppure il suo lato è **allo sbando** (`sim.rout[side]`: meno del
+  35 % delle unità iniziali, `ROUT_FRAC`). I velivoli sono sempre contatti.
+- **Identificazione**: come prima (entro la vista, con linea di vista; unità ferme in copertura solo entro
+  `CONCEAL_INF/VEH`, ricognizione × 1.8).
+- **Chi spara si rivela** (`u.reveal_t`, `REVEAL_T` = 6 s): la posizione è nota ovunque; il tipo è identificato da ogni nemico
+  entro `REVEAL_K` (1.5) × la gittata di chi ha sparato, almeno `REVEAL_MIN` 700 px (carri 2100, contraerea 1650, bunker
+  1200, artiglieria tutto il campo), senza linea di vista. Eccezione: la fanteria che spara **da una copertura** è
+  identificata solo entro `REVEAL_COVER` (420 bosco / 380 città): resta un «?» da stanare.
+- **Fuoco**: il fuoco diretto richiede l'identificazione (e la linea di vista); l'**artiglieria** tira anche sui contatti «?»
+  con dispersione × `CONTACT_SCATTER` 1.7 (da sola, e su ordine: `order_attack` su un «?» → artiglieria `ATTACK` sul
+  contatto, gli altri movimento d'attacco). `unit_at` trova anche i contatti (bersaglio più largo).
+- **Imboscata**: solo il primo colpo da nascosta, × `AMBUSH_MUL` 1.25 (era ×1.6 per 5 s). Fanteria anticarro in copertura
+  × `AT_COVER_MUL` 8 (era 5). Scala del danno `BattleSim.K` = 0.18 (era 0.3: il contatto è immediato, lo scontro dura 2–3 minuti).
+- **Fantasmi** `sim.ghosts[si]`: ora nascono quando si perde il *contatto* (non l'identificazione); `type` = "" se l'unità
+  non era mai stata identificata.
+- L'IA usa le stesse informazioni (`known` per le posizioni, `spotted` per i tipi).
+
+## Contatto rapido e obiettivi contesi
+- Linee di schieramento `sim.front_x = [1560, W − 1560]` (`BattleRules.FRONT_X`; era 1150 → terra di nessuno da 2500 a
+  1680 px). Zona di schieramento dell'attaccante fino a `front_x[0] + 250`. Bunker a `front_x[1] + 60`, trincee e mine
+  davanti alla linea del difensore.
+- **Obiettivi** (`_gen_objectives`): massimo 4, **almeno 2 nella fascia contesa** `OBJ_BAND` = 42–66 % di W, neutri:
+  ponti/guadi nella fascia, altura (`hill`), `road` («Crocevia» / «Strada maestra»), `site` (località per terreno: Casale,
+  Radura, Sella, Pozzo, Rifugio nord/centrale/sud; in città Piazza/Incrocio) a `OBJ_MID` = 54 % di W; distanza minima
+  `OBJ_SEP` 560 px. QG in fondo (W − 700); il primo edificio del territorio al 60 % di W (del difensore ma conteso), il
+  secondo dietro la linea solo senza QG; linea dei bunker se resta posto. `setup.clear` → solo QG/edifici (test).
+- Conquista in `OBJ_HOLD` = 30 s (era 60). `sim.obj_flips`, `result.flips` = cambi di possesso.
+- Rinforzi a `REINF_T` = 105 s (attaccante) / 90 s (difensore), annunciati `WARN_T` = 20 s prima.
+- Regole di fine: stallo IA dopo 60 s senza danni (`NO_DMG_AI`); ritirata dell'IA attaccante da 80 s sotto il 40 % della
+  potenza del difensore. Bilanciamento: `ATT_INITIATIVE` 1.2 (era 1.6), `DEF_TERRAIN` = {urbano: 1.35} (danno del difensore).
+
+## Eventi e stato per la vista
+- fx `{"e":"contact", u, id, side, x, y}`: nuovo «?» per il lato del giocatore.
+- fx `{"e":"announce", kind, side, x, y, t, …}`: `kind` = `"reinf"` (+ `n`; rinforzi di `side` tra `t` s),
+  `"air"` (+ `r`; attacco aereo di `side` sul punto tra `t` s), `"obj_threat"` (+ `name`; `side` sta prendendo un obiettivo
+  dell'altro, mancano `t` s), `"rout"` (lato `side` allo sbando).
+- `sim.pending` = `[{kind: "reinf"|"air", side, t (istante), x, y, n}]` eventi futuri (conto alla rovescia).
+- `sim.air_strike_announced(si, x, y)`: attacco aereo con preavviso `AI_AIR_WARN` 7 s (lo usa l'IA dopo `AI_AIR_T` 45 s
+  sul gruppo di contatti più denso); `air_strike` (giocatore) invariato.
+- fx `fire` dell'artiglieria: in più `"aimed": bool` (tiro su un'unità nota, non fuoco d'area).
+- Vista: `Battle3D.is_contact_unit(u)`; `BattleHud.draw_contact(...)` (gettone «?» 2D); lampo arancione/giallo accanto alle
+  unità con `reveal_t > 0`.
+
+## IA (BattleAI)
+- `_obj_tasks`: distaccamenti `role "cap"` (`u.obj` = indice) su ogni obiettivo: presidio (1), conquista dei neutri (2; 1 con
+  eserciti piccoli), riconquista (3), contrattacco dove il nemico ha messo piede (3); chi sta perdendo ai punti dopo 45 s
+  manda tutto sugli obiettivi. Il difensore IA parte con i presidi già sugli obiettivi dalla sua parte del 45 % di W.
+- Difensore: carri in linea con la fanteria avanzata e liberi di manovrare (non più "mantieni posizione"); passa
+  all'attacco se è più forte (×1.6, oppure ×1.15 nei tempi morti o col nemico allo sbando).
+- `A["press"]`: nei tempi morti (8 s senza danni), col nemico allo sbando o senza nemici identificati, fanteria e carri
+  vanno sul contatto più vicino (`_nearest_known`). Fase di ricognizione dell'attaccante: finisce al primo contatto.
+
+## Metrica del divertimento (`tests/test_tactics.gd --only=fun`)
+Specchio 10f5c2a su 6 terreni × 2 seed, IA contro IA a passo 0.1 s: primo scontro diretto, % di tempo con uno scontro in
+corso (colpi mirati negli ultimi 4 s), secondi e finestra più lunga senza nemici noti, cambi di possesso. Soglie del test:
+primo scontro < 30 s, scontro in corso > 60 %, nessuna finestra > 40 s. `--only=maps`: difensore a forze pari per mappa.

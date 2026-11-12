@@ -115,33 +115,89 @@ func _build_villages() -> void:
 					dir = (b - a).normalized()
 		var side := Vector2(-dir.y, dir.x)
 		var yaw := atan2(dir.x, dir.y)
-		# chiesa al centro (piazza), luci della piazza e dei lampioni lungo la via principale
-		T._lm_add("church", _g(c), yaw, Vector3.ONE * (1.25 if big else 1.0), Color(1, 1, 1))
+		# chiesa sulla piazza al centro, luci della piazza e dei lampioni lungo le vie
+		T._lm_add("church", _g(c + side * 11.0), yaw, Vector3.ONE * (1.25 if big else 1.0), Color(1, 1, 1))
 		T.add_glow(c, 34.0 if big else 22.0, 1.3, Color(1.0, 0.85, 0.6))
 		var placed := 0
 		var spread := 75.0 if not big else 190.0
-		var nl := int(spread * 2.0 / 26.0)
+		# NOTTE 3 — vie interne: la via principale lungo la strada, e traverse/parallele (maglia a isolati nelle cittadine,
+		# due o tre vicoli nei villaggi). Coordinate locali (lungo `dir`, lungo `side`); le case stanno fuori dalle vie.
+		var lanes_a: Array = []   # traverse: posizione lungo la via principale
+		var lanes_o: Array = [0.0]   # parallele: scostamento laterale (0 = via principale)
+		var cross_len := spread * (0.55 if not big else 1.0)
+		if big:
+			for q in [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]:
+				lanes_a.append(q + rng.randf_range(-6.0, 6.0))
+			for q in [-135.0, -90.0, -45.0, 45.0, 90.0, 135.0]:
+				lanes_o.append(q + rng.randf_range(-5.0, 5.0))
+		else:
+			var nlan := 2 + rng.randi() % 2
+			for q in nlan:
+				lanes_a.append((float(q) + 0.5 - nlan * 0.5) * spread * 1.6 / nlan + rng.randf_range(-8.0, 8.0))
+			if rng.randf() < 0.5:
+				lanes_o.append(28.0 * (1.0 if rng.randf() < 0.5 else -1.0))
+		var along_len := spread * (1.25 if not big else 1.0)
+		var s0 := streets.size()
+		for q in lanes_a:
+			streets.append([c + dir * float(q) - side * cross_len, c + dir * float(q) + side * cross_len, 4.6, big])
+		for q in lanes_o:
+			var k_len := 1.0 if float(q) == 0.0 else 0.9
+			streets.append([c + side * float(q) - dir * along_len * k_len, c + side * float(q) + dir * along_len * k_len, 6.5 if float(q) == 0.0 else 4.6, big or float(q) == 0.0])
+		# lampioni: lungo la via principale (con il palo) e lungo le traverse (solo la luce)
+		var nl := int(along_len * 2.0 / 24.0)
 		for k in nl:
-			var lp := c + dir * (-spread + 26.0 * k + 8.0) + side * (6.0 if k % 2 == 0 else -6.0)
+			var lp := c + dir * (-along_len + 24.0 * k + 8.0) + side * (4.6 if k % 2 == 0 else -4.6)
 			if _land_ok(lp):
-				T.add_glow(lp, 14.0, 0.9, Color(1.0, 0.82, 0.55))
-		for k in n * 3:
-			if placed >= n:
+				T.add_glow(lp, 15.0, 1.0, Color(1.0, 0.82, 0.55), 5.6)
+				T._lm_add("lamp", _g(lp, 0.05), yaw + (PI * 0.5 if k % 2 == 0 else -PI * 0.5), Vector3.ONE, Color(1, 1, 1))
+		for q in lanes_a:
+			for sg in [-1.0, 1.0]:
+				for e in [0.45, 0.9]:
+					var lp2: Vector2 = c + dir * float(q) + side * (cross_len * float(e) * float(sg))
+					if _land_ok(lp2):
+						T.add_glow(lp2, 12.0, 0.8, Color(1.0, 0.8, 0.52), 5.0)
+		# le case si affacciano sulle vie: un punto a caso lungo una via (peso = lunghezza), sul bordo, fronte alla strada
+		var vsegs: Array = streets.slice(s0)
+		var tot_len := 0.0
+		for sg in vsegs:
+			tot_len += (sg[0] as Vector2).distance_to(sg[1])
+		var spots: Array = []
+		for k in n * 6:
+			if placed >= n or vsegs.is_empty():
 				break
-			var along := rng.randf_range(-1.0, 1.0) * spread * (1.4 if not big else 1.0)
-			var off := rng.randf_range(14.0, spread * (0.55 if not big else 1.0)) * (1.0 if rng.randf() < 0.5 else -1.0)
-			if big:
-				# griglia di isolati
-				along = roundf(along / 22.0) * 22.0 + rng.randf_range(-3.0, 3.0)
-				off = roundf(off / 20.0) * 20.0 + rng.randf_range(-3.0, 3.0)
-			var p := c + dir * along + side * off
-			if p.distance_to(c) < 13.0 or not _slope_ok(p, 0.95) or not _land_ok(p):
+			var pick := rng.randf() * tot_len
+			var seg: Array = vsegs[0]
+			for sg in vsegs:
+				seg = sg
+				pick -= (sg[0] as Vector2).distance_to(sg[1])
+				if pick <= 0.0:
+					break
+			var sa: Vector2 = seg[0]
+			var sb: Vector2 = seg[1]
+			var sd := (sb - sa).normalized()
+			var sn := Vector2(-sd.y, sd.x) * (1.0 if rng.randf() < 0.5 else -1.0)
+			var p: Vector2 = sa.lerp(sb, rng.randf_range(0.03, 0.97)) + sn * (float(seg[2]) * 0.5 + rng.randf_range(6.5, 10.0))
+			if p.distance_to(c + side * 11.0) < 17.0 or not _slope_ok(p, 0.95) or not _land_ok(p):
 				continue
+			var blocked := false
+			for sg in vsegs:
+				if sg != seg and Geometry2D.get_closest_point_to_segment(p, sg[0], sg[1]).distance_to(p) < float(sg[2]) * 0.5 + 5.5:
+					blocked = true
+					break
+			if not blocked:
+				for q in spots:
+					if (q as Vector2).distance_to(p) < 12.5:
+						blocked = true
+						break
+			if blocked:
+				continue
+			spots.append(p)
+			var hyaw := atan2(sd.x, sd.y)
 			var s := rng.randf_range(0.75, 1.15)
 			var tint := Color(rng.randf_range(0.85, 1.12), rng.randf_range(0.85, 1.08), rng.randf_range(0.8, 1.05))
-			T._lm_add("fhouse", _g(p), yaw + (0.0 if rng.randf() < 0.7 else PI * 0.5) + rng.randf_range(-0.12, 0.12), Vector3(s, s * rng.randf_range(0.85, 1.25), s), tint)
-			if rng.randf() < 0.6:
-				T.add_glow(p, 9.0, 0.6, Color(1.0, 0.75, 0.45))
+			T._lm_add("fhouse", _g(p), hyaw + (0.0 if rng.randf() < 0.75 else PI * 0.5) + rng.randf_range(-0.06, 0.06), Vector3(s, s * rng.randf_range(0.85, 1.25), s), tint)
+			if rng.randf() < 0.8:
+				T.add_glow(p - sn * 5.0, 11.0, 0.8, Color(1.0, 0.75, 0.45), 2.4)
 			placed += 1
 			if rng.randf() < 0.35:
 				var tp := p + side * rng.randf_range(-12.0, 12.0) + dir * rng.randf_range(-10.0, 10.0)
@@ -161,12 +217,67 @@ func _build_villages() -> void:
 					for q in cols:
 						var tp := oc + od * ((q - cols * 0.5) * 6.0) + os * ((r - rows * 0.5) * 7.0)
 						orchard.append([_g(tp, 0.15), rng.randf_range(0.3, 0.42), oy, T._tint()])
+	_build_street_mesh()
+	if "--paesi=1" in OS.get_cmdline_user_args():   # collaudo: dove sono i paesi (per --cam=x,z)
+		for v in villages:
+			print("[paese] %s %.0f,%.0f case %d" % ["cittadina" if v["big"] else "villaggio", (v["c"] as Vector2).x, (v["c"] as Vector2).y, int(v["n"])])
+		# e la telecamera può uscire dal campo per guardarli da vicino
+		var b3 := T.get_parent()
+		if b3 != null and "cam" in b3:
+			(func() -> void: b3.cam.limit = Vector2(30000.0, 30000.0)).call_deferred()
 	if not trees.is_empty():
 		T.set_tree_range(T._add_instances("broadleaf", trees, false), 3200.0)
 	if not orchard.is_empty():
 		T.set_tree_range(T._add_instances("broadleaf", orchard, false), 2600.0)
 
 var orchard := []
+var streets: Array = []      # vie interne dei paesi: [a, b, larghezza]
+
+## Vie interne dei paesi: strisce appoggiate al terreno (anche dentro la maschera del campo, dove lo shader non le conosce).
+func _build_street_mesh() -> void:
+	if streets.is_empty():
+		return
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var asphalt := Color(0.25, 0.25, 0.26)
+	var dirt := Color(0.5, 0.44, 0.35)
+	if T.tkey == "artico":
+		asphalt = Color(0.34, 0.35, 0.38)
+		dirt = Color(0.62, 0.63, 0.66)
+	elif T.tkey == "deserto":
+		asphalt = Color(0.42, 0.38, 0.33)
+		dirt = Color(0.66, 0.57, 0.44)
+	var n_tri := 0
+	for sg in streets:
+		var a: Vector2 = sg[0]
+		var b: Vector2 = sg[1]
+		var w: float = sg[2]
+		var L := a.distance_to(b)
+		var n := maxi(1, int(L / 9.0))
+		var dir := (b - a) / maxf(L, 0.001)
+		var nrm := Vector2(-dir.y, dir.x) * w * 0.5
+		var c: Color = (asphalt if bool(sg[3]) else dirt) * rng.randf_range(0.93, 1.05)
+		for k in n:
+			var p0 := a.lerp(b, float(k) / n)
+			var p1 := a.lerp(b, float(k + 1) / n)
+			var pm := (p0 + p1) * 0.5
+			if not _land_ok(pm) or T.normal(pm.x, pm.y).y < 0.9 or far_d(pm) < 40.0:
+				continue
+			var v := [p0 + nrm, p0 - nrm, p1 - nrm, p1 + nrm]
+			for idx in [0, 1, 2, 0, 2, 3]:
+				var q: Vector2 = v[idx]
+				st.set_color(c)
+				st.set_normal(Vector3.UP)
+				st.add_vertex(Vector3(q.x, T.height(q.x, q.y) + 0.42, q.y))
+			n_tri += 2
+	if n_tri == 0:
+		return
+	var mi := MeshInstance3D.new()
+	mi.name = "VillageStreets"
+	mi.mesh = st.commit()
+	mi.material_override = T.road_material()
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	T.add_child(mi)
 
 ## Periferie della città oltre la griglia degli isolati: case basse su una maglia allentata, sempre più rade allontanandosi.
 func _suburbs() -> void:
@@ -210,9 +321,9 @@ func _suburbs() -> void:
 				var tint := Color(rng.randf_range(0.8, 1.05), rng.randf_range(0.8, 1.02), rng.randf_range(0.78, 1.0))
 				T._lm_add("fhouse", _g(p), yaw + rng.randf_range(-0.06, 0.06), Vector3(s, s * rng.randf_range(0.9, 1.3), s), tint)
 				if rng.randf() < 0.5:
-					T.add_glow(p, 9.0, 0.6, Color(1.0, 0.78, 0.5))
+					T.add_glow(p, 9.0, 0.6, Color(1.0, 0.78, 0.5), 2.2)
 			if rng.randf() < 0.35 * dens:
-				T.add_glow(Vector2(cx, cz), 20.0, 0.9, Color(1.0, 0.85, 0.6))
+				T.add_glow(Vector2(cx, cz), 20.0, 0.9, Color(1.0, 0.85, 0.6), 5.5)
 
 ## Specchi d'acqua dei laghi lontani (le conche sono già nel rilievo): disco d'acqua con lo shader del fiume.
 func _build_lakes() -> void:
@@ -379,14 +490,10 @@ func _build_road_mesh() -> void:
 					st.set_normal(Vector3.UP)
 					st.add_vertex(Vector3(q.x, y[idx], q.y))
 	var mesh := st.commit()
-	var m := StandardMaterial3D.new()
-	m.vertex_color_use_as_albedo = true
-	m.roughness = 0.95
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var mi := MeshInstance3D.new()
 	mi.name = "FarRoads"
 	mi.mesh = mesh
-	mi.material_override = m
+	mi.material_override = T.road_material()
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	T.add_child(mi)
 

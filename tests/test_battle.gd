@@ -111,8 +111,11 @@ func _test_abilities() -> void:
 	var b = BS.new(_setup("pianura", {"inf": 6, "jet": 1}, {"inf": 8, "tank": 3}, 0, 4, {"ah": true}))
 	b.emit_fx = true
 	var tgt = null
+	b.paused = false
+	for i in 30:
+		b.step(0.05)   # il difensore IA prende posizione (notte 3: i carri manovrano, la fanteria tiene i posti)
 	for u in b.units:
-		if u.side == 1 and u.type == "tank":
+		if u.side == 1 and u.type == "inf" and not u.dead and u.hold:
 			tgt = u
 			break
 	var hp0 := 0.0

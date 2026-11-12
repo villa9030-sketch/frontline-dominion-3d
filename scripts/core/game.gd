@@ -69,7 +69,8 @@ var _battle_times: Array = []   # [time, continente] delle battaglie recenti
 var _hot_at := {}               # continente -> tempo dell'ultimo "fronte caldo"
 var _ctx_dirty := false
 
-const SAVE_VERSION := 3          # v3: logoramento (terr.worn), carte inganno (decoy/silence/intel), nebbia a tre modalità
+const SAVE_VERSION := 4          # v4 (notte 3): ordini del comando, eventi mondiali, minacce annunciate, attacchi per turno
+                                 # v3: logoramento (terr.worn), carte inganno (decoy/silence/intel), nebbia a tre modalità
 const SAVE_MIN_VERSION := 2      # i salvataggi v2 (turni) si caricano con migrazione
 const ROUND_CAP := 120          # partite normali: al limite vince chi controlla più territori
 const REINFORCE_DIV := 2.0     # rinforzi per turno = territori / 2 (min 4) + bonus dei continenti
@@ -100,6 +101,18 @@ var fog := false                # true con nebbia leggera o totale (compatibilit
 var fog_mode := "none"          # "none" | "light" | "full" (docs/omogeneita.md §5)
 var intel := {}                 # "p:t" -> round fino al quale p vede esattamente t (ricognizione)
 var _vis_cache := {}            # viewer -> PackedByteArray
+
+# notte 3 — ritmo del tabellone (docs/notte3_tabellone.md)
+var attacks_done := 0           # attacchi fatti nel turno: attack_used = attacks_done >= attacks_max()
+var intents: Array = []         # per giocatore: null | {from, to, round} — attacco che l'IA prepara per il prossimo turno
+var world_event = null          # null | {id, terr (-1 nessuno), round (scadenza), born}
+var missions_on := true         # ordini del comando (opts.missions; spenti negli scenari)
+var events_on := true           # eventi mondiali (opts.events; spenti negli scenari)
+var _next_event := 0            # round del prossimo evento mondiale
+var _last_event := ""
+var _xrng := RandomNumberGenerator.new()   # RNG separato per ordini ed eventi: non sposta la sequenza casuale della partita
+var _ai_w := 0.5                # peso dell'attesa dopo l'ultima azione IA (attacco 1, spostamento 0.6, resto 0.3)
+var _act_kind := ""
 ## Patti di non aggressione: [{a, b, until}] e offerte delle IA al giocatore: [{from, to, until}]
 var pacts: Array = []
 var pact_offers: Array = []
@@ -166,7 +179,16 @@ func _init(o: Dictionary = {}) -> void:
 		"fog_mode": "",
 		"scenario": scen_id,
 		"ai_step_delay": maxf(0.0, _num(o.get("ai_step_delay", 0.8))),
+		"missions": bool(o.get("missions", scenario == null)),
+		"events": bool(o.get("events", scenario == null)),
+		"attacks_per_turn": maxi(0, int(_num(o.get("attacks_per_turn", 0)))),   # 0 = regola (Data.TURN_RULES.attacks)
 	}
+	if o.get("neutral_start") is Dictionary:
+		opts["neutral_start"] = o["neutral_start"]   # solo per i confronti (tests/sim.gd --neutral=light)
+	missions_on = opts["missions"]
+	events_on = opts["events"]
+	_xrng.seed = (seed_v ^ 0x5F3759DF) & 0xffffffff
+	_next_event = int(Data.WORLD_EVENT_FIRST)
 	# nebbia: opts.fog_mode ("none"/"light"/"full") ha la precedenza; il vecchio bool fog = totale/nessuna
 	var fm := str(o.get("fog_mode", "")) if o.get("fog_mode") != null else ""
 	if not Data.FOG_MODES.has(fm):
@@ -202,7 +224,10 @@ func _init(o: Dictionary = {}) -> void:
 				"built": 0, "researched": 0, "cardsPlayed": 0, "maxTerr": 0, "eliminatedAt": -1.0},
 			"market": {"oil": 1.0, "steel": 1.0, "manpower": 1.0},
 			"militia_t": 0.0, "upkeep": 0.0,
+			"mission": null,
 		})
+	intents.resize(players.size())
+	intents.fill(null)
 	for p in players:
 		if p["human"]:
 			human_idx = p["idx"]
@@ -451,9 +476,10 @@ func _setup_regional() -> void:
 				tr["forces"]["tank"] = 1
 	for tr in terr:
 		if tr["owner"] == -1:
-			tr["forces"]["inf"] = 4 + int(floor(_rand() * 5))
-			tr["forces"]["tank"] = int(floor(_rand() * 3))
-			if _rand() < 0.35:
+			var NS: Dictionary = opts.get("neutral_start", Data.NEUTRAL_START)
+			tr["forces"]["inf"] = int(NS["inf_min"]) + int(floor(_rand() * int(NS["inf_var"])))
+			tr["forces"]["tank"] = int(floor(_rand() * int(NS["tank_var"])))
+			if _rand() < float(NS["art_chance"]):
 				tr["forces"]["art"] = 1 + int(floor(_rand() * 2))
 
 
@@ -1017,8 +1043,8 @@ func visible_forces(viewer: int, t: int):
 		return Data.clone_forces(tr["forces"])
 	if has_intel(viewer, t):
 		return Data.clone_forces(tr["forces"])
-	if tr["owner"] >= 0 and (int(tr.get("silence", 0)) > 0 or int(tr.get("decoy", 0)) > 0):
-		return null
+	if fog and tr["owner"] >= 0 and (int(tr.get("silence", 0)) > 0 or int(tr.get("decoy", 0)) > 0):
+		return null   # gli inganni valgono solo con la nebbia di guerra (notte 3)
 	if fog and not is_visible(viewer, t):
 		return null
 	if tr["owner"] < 0:
@@ -1767,6 +1793,8 @@ func play_cards(p: int, idxs, op: String, target = -1) -> Dictionary:
 		return _fail("Tris non valido")
 	if not Data.OPS.has(op):
 		return _fail("Operazione sconosciuta")
+	if not op_available(op):
+		return _fail("Operazione disponibile solo con la nebbia di guerra")
 	var tr = null
 	if Data.OPS[op]["target"] == "self":
 		if not _valid_terr(target):
@@ -1892,6 +1920,11 @@ func play_cards(p: int, idxs, op: String, target = -1) -> Dictionary:
 	return _ok()
 
 
+## false per le carte inganno quando la partita è senza nebbia (non c'è nulla da nascondere)
+func op_available(op: String) -> bool:
+	return fog or not Data.FOG_OPS.has(op)
+
+
 # ------------------------------------------------------------------ carte
 func _draw_card(p: int):
 	if deck.is_empty():
@@ -1974,6 +2007,10 @@ func _capture(t: int, by: int, forces: Dictionary, o: Dictionary = {}) -> void:
 			if P["human"]:
 				add_log("Hai ottenuto una carta Comando", "good", by)
 			emit_event("card", {"player": by})
+	if by >= 0:
+		var ms = players[by].get("mission")
+		if ms is Dictionary and int(ms["terr"]) == t:
+			_mission_done(by)
 	if prev >= 0 and players[prev]["alive"] and territories_of(prev).is_empty():
 		_eliminate(prev, by)
 
@@ -2454,6 +2491,7 @@ func _next_alive(from: int) -> int:
 
 func turn_status() -> Dictionary:
 	return {"round": round, "player": current, "phase": phase, "attack_used": attack_used, "move_used": move_used,
+		"attacks_left": attacks_left(), "attacks_max": attacks_max(),
 		"truce_rounds_left": maxi(0, truce_rounds - round + 1), "human_turn": is_human_turn(), "next_player": _next_alive(current),
 		"round_limit": round_limit, "rounds_left": rounds_left(),
 		"ai_turn": over == null and current >= 0 and not players[current]["human"],
@@ -2499,9 +2537,11 @@ func _begin_turn(p: int) -> void:
 	current = p
 	phase = "rifornimento"
 	attack_used = false
+	attacks_done = 0
 	move_used = false
 	_turn_steps = 0
 	_ai_timer = 0.0
+	_ai_w = 0.5
 	_turn_started = true
 	var P: Dictionary = players[p]
 	_vis_cache.clear()
@@ -2549,10 +2589,13 @@ func _begin_turn(p: int) -> void:
 				add_log("Le truppe di " + Data.TERRITORIES[tr["idx"]]["name"] + " si sono riprese dal logoramento", "info", p)
 	turn_count += 1
 	add_log("Turno di " + P["fac"]["short"] + " (round " + str(round) + ")", "turn", null)
+	_mission_tick(p)
 	emit_event("turn_start", {"player": p, "round": round})
 	var ai = ais[p] if p < ais.size() else null
 	if ai != null and ai.has_method("begin_turn"):
-		ai.begin_turn()
+		ai.begin_turn()   # l'IA legge qui la propria minaccia annunciata (intents[p]) prima che venga tolta
+	if p < intents.size():
+		intents[p] = null
 	_check_victory()
 
 
@@ -2657,6 +2700,7 @@ func _new_round() -> void:
 	for k in intel.keys():
 		if int(intel[k]) < round:
 			intel.erase(k)
+	_world_events_tick()
 	if not pacts.is_empty() or not pact_offers.is_empty():
 		_update_pacts()
 	_snapshot()
@@ -2674,6 +2718,273 @@ func _after_action() -> void:
 	_check_victory()
 	if _ctx_dirty:
 		_update_context()
+
+
+# ------------------------------------------------------------------ ritmo del tabellone (notte 3)
+## Attacchi consentiti in questo turno: regola base (1), 2 durante la tregua iniziale delle partite libere (solo i neutrali
+## sono attaccabili: i primi round scorrono più in fretta), +1 con l'evento «Finestra di bel tempo».
+func attacks_max() -> int:
+	var n := int(opts.get("attacks_per_turn", 0))
+	if n <= 0:
+		n = int(Data.TURN_RULES["attacks"])
+		if scenario == null and in_truce():
+			n = maxi(n, int(Data.TURN_RULES.get("truce_attacks", n)))
+	if world_event is Dictionary:
+		n += int(Data.WORLD_EVENTS[world_event["id"]].get("attacks", 0))
+	return maxi(1, n)
+
+
+func attacks_left() -> int:
+	if attack_used or move_used or phase == "spostamento":
+		return 0
+	return maxi(0, attacks_max() - attacks_done)
+
+
+## Partite libere: segnala sul tabellone (scenario_targets, già disegnati dalla mappa) l'ordine del comando del giocatore
+## e il territorio premio dell'evento mondiale.
+func _update_goal_marks() -> void:
+	if scenario != null:
+		return
+	var out: Array = []
+	if human_idx >= 0 and players[human_idx]["alive"]:
+		var m = players[human_idx].get("mission")
+		if m is Dictionary:
+			out.append(int(m["terr"]))
+	if world_event is Dictionary and int(world_event["terr"]) >= 0 and not out.has(int(world_event["terr"])):
+		out.append(int(world_event["terr"]))
+	scenario_targets = out
+
+
+## Ordine del comando del giocatore p (null | {terr, until, reward, born})
+func mission_of(p: int):
+	return players[p].get("mission") if p >= 0 and p < players.size() else null
+
+
+func mission_text(p: int) -> String:
+	var m = mission_of(p)
+	if not (m is Dictionary):
+		return ""
+	var left := int(m["until"]) - round + 1
+	return "Conquista %s entro il round %d (%s): %s" % [Data.TERRITORIES[int(m["terr"])]["name"], int(m["until"]),
+		"ultimo turno" if left <= 1 else "ancora %d turni" % left, Data.MISSION_REWARDS[m["reward"]]["name"]]
+
+
+## Inizio turno di p: scade l'ordine vecchio, ne arriva uno nuovo
+func _mission_tick(p: int) -> void:
+	if not missions_on or over != null:
+		return
+	var P: Dictionary = players[p]
+	var m = P.get("mission")
+	if m is Dictionary:
+		var t := int(m["terr"])
+		if terr[t]["owner"] == p:
+			P["mission"] = null   # già nostro: nulla da fare
+		elif round > int(m["until"]):
+			P["mission"] = null
+			if P["human"]:
+				add_log("Ordine del comando scaduto: " + Data.TERRITORIES[t]["name"] + " non è stata conquistata in tempo", "info", p)
+			emit_event("objective_failed", {"player": p, "terr": t})
+	if P.get("mission") == null:
+		_new_mission(p)
+	_update_goal_marks()
+
+
+func _new_mission(p: int) -> void:
+	var P: Dictionary = players[p]
+	var cands: Array = []
+	var seen := {}
+	for t in territories_of(p):
+		var mine := Data.total_units(terr[t]["forces"])
+		for j in Data.TERRITORIES[t]["adj"]:
+			var o: int = terr[j]["owner"]
+			if o == p:
+				continue
+			if o >= 0 and (in_truce() or has_pact(p, o) or int(players[o]["hq"]) == j):
+				continue   # niente QG (troppo per tre turni), niente partner, niente giocatori durante la tregua
+			var T: Dictionary = Data.TERRITORIES[j]
+			var c: String = T["c"]
+			var have := 0
+			for x in Data.CONT_TERR[c]:
+				if terr[x]["owner"] == p:
+					have += 1
+			var tot: int = Data.CONT_TERR[c].size()
+			var s := 4.0 + float(T["amt"]) * 2.0 + float(Data.CONTINENTS[c]["bonus"]) * (4.0 if have + 1 == tot else 2.0 * have / tot)
+			if o >= 0:
+				s += 2.0
+			var need := Data.total_units(terr[j]["forces"])
+			if mine + int(reinforce_amount(p)) < need:
+				s *= 0.4   # oggi fuori portata: resta possibile ma poco probabile
+			if not seen.has(j) or float(seen[j]) < s:
+				seen[j] = s
+	for j in seen:
+		cands.append([j, seen[j]])
+	if cands.is_empty():
+		return
+	cands.sort_custom(func(a, b): return a[1] > b[1] or (a[1] == b[1] and a[0] < b[0]))
+	var pick: Array = cands[_xrng.randi_range(0, mini(2, cands.size() - 1))]
+	var rk: String = ["card", "reinf", "money"][_xrng.randi_range(0, 2)]
+	P["mission"] = {"terr": int(pick[0]), "until": round + int(Data.MISSION_ROUNDS) - 1, "reward": rk, "born": round}
+	if P["human"]:
+		add_log("Ordine del comando: " + mission_text(p), "info", p)
+	emit_event("objective_new", {"player": p, "terr": int(pick[0]), "until": int(P["mission"]["until"]), "reward": rk})
+
+
+func _mission_done(p: int) -> void:
+	var P: Dictionary = players[p]
+	var m: Dictionary = P["mission"]
+	P["mission"] = null
+	var R: Dictionary = Data.MISSION_REWARDS[m["reward"]]
+	match str(m["reward"]):
+		"card":
+			if _draw_card(p) != null:
+				emit_event("card", {"player": p})
+		"reinf":
+			P["pool"]["inf"] += int(R["inf"])
+		"money":
+			P["res"]["money"] += float(R["money"])
+	P["stats"]["missions"] = int(P["stats"].get("missions", 0)) + 1
+	if P["human"]:
+		add_log("Ordine del comando eseguito: " + Data.TERRITORIES[int(m["terr"])]["name"] + " conquistata → " + str(R["name"])
+			+ (" da schierare" if m["reward"] == "reinf" else ""), "good", p)
+	_update_goal_marks()
+	emit_event("objective_done", {"player": p, "terr": int(m["terr"]), "reward": str(m["reward"])})
+
+
+## L'IA annuncia l'attacco che prepara per il prossimo turno (minaccia visibile sul confine)
+func set_intent(p: int, from: int, to: int) -> void:
+	if p < 0 or p >= intents.size():
+		return
+	if not _valid_terr(from) or not _valid_terr(to) or terr[from]["owner"] != p or terr[to]["owner"] == p:
+		intents[p] = null
+		return
+	intents[p] = {"from": from, "to": to, "round": round}
+	emit_event("threat", {"player": p, "from": from, "to": to, "target_owner": int(terr[to]["owner"])})
+
+
+## Minacce note a viewer: attacchi in preparazione contro i suoi territori ({player, from, to, att, def} in unità).
+## Con la nebbia solo se il territorio di partenza è in vista. all = true: anche quelle contro gli altri giocatori.
+func threats_for(viewer: int, all: bool = false) -> Array:
+	var out: Array = []
+	for i in intents.size():
+		var it = intents[i]
+		if not (it is Dictionary) or i == viewer or not players[i]["alive"]:
+			continue
+		var f := int(it["from"])
+		var t := int(it["to"])
+		var o: int = terr[t]["owner"]
+		if terr[f]["owner"] != i or o == i or o < 0 or has_pact(i, o):
+			continue
+		if o != viewer and not all:
+			continue
+		if fog and viewer >= 0 and not is_visible(viewer, f):
+			continue
+		out.append({"player": i, "from": f, "to": t, "att": Data.total_units(terr[f]["forces"]), "def": Data.total_units(terr[t]["forces"])})
+	return out
+
+
+## Evento mondiale in corso, per l'interfaccia: "" se non c'è
+func world_event_text() -> String:
+	if not (world_event is Dictionary):
+		return ""
+	var E: Dictionary = Data.WORLD_EVENTS[world_event["id"]]
+	var t := int(world_event["terr"])
+	match str(E["kind"]):
+		"prize":
+			return "%s a %s: chi controlla il territorio all'inizio del round %d riceve %s" % [E["name"], Data.TERRITORIES[t]["name"], int(world_event["round"]), E["rtext"]]
+		"timed":
+			return "%s: in questo round ogni giocatore può fare un attacco in più" % E["name"]
+	return "%s a %s: il presidio neutrale si è dimezzato" % [E["name"], Data.TERRITORIES[t]["name"]]
+
+
+func _world_events_tick() -> void:
+	if not events_on or over != null:
+		return
+	if world_event is Dictionary and round >= int(world_event["round"]):
+		_resolve_world_event()
+	if world_event == null and round >= _next_event:
+		_spawn_world_event()
+		_next_event = round + int(Data.WORLD_EVENT_EVERY)
+
+
+func _spawn_world_event() -> void:
+	# territorio premio: non un QG, conteso (al confine tra proprietari diversi), meglio se tra due giocatori
+	var prize: Array = []
+	var neutral: Array = []
+	var hqs := {}
+	for P in players:
+		if P["alive"]:
+			hqs[int(P["hq"])] = true
+	for tr in terr:
+		var t: int = tr["idx"]
+		var owners := {}
+		owners[int(tr["owner"])] = true
+		for j in Data.TERRITORIES[t]["adj"]:
+			owners[int(terr[j]["owner"])] = true
+		var np := 0
+		for o in owners:
+			if o >= 0:
+				np += 1
+		if not hqs.has(t) and owners.size() >= 2 and np >= 1:
+			prize.append(t)
+			if np >= 2:
+				prize.append(t); prize.append(t)   # peso triplo: conteso tra giocatori
+		if int(tr["owner"]) < 0 and np >= 1 and Data.total_units(tr["forces"]) >= 4:
+			neutral.append(t)
+	var ids: Array = []
+	if not prize.is_empty():
+		ids.append_array(["convoglio", "giacimento", "archivio"])
+	if not neutral.is_empty():
+		ids.append_array(["diserzioni", "diserzioni"])
+	if not in_truce():
+		ids.append("offensiva")
+	ids = ids.filter(func(x): return x != _last_event)
+	if ids.is_empty():
+		return
+	var id: String = ids[_xrng.randi_range(0, ids.size() - 1)]
+	_last_event = id
+	var E: Dictionary = Data.WORLD_EVENTS[id]
+	match str(E["kind"]):
+		"prize":
+			var t: int = prize[_xrng.randi_range(0, prize.size() - 1)]
+			world_event = {"id": id, "terr": t, "round": round + int(Data.WORLD_EVENT_HOLD), "born": round}
+		"timed":
+			world_event = {"id": id, "terr": -1, "round": round + int(E["rounds"]), "born": round}
+		_:
+			var t2: int = neutral[_xrng.randi_range(0, neutral.size() - 1)]
+			var f: Dictionary = terr[t2]["forces"]
+			for k in Data.UNIT_KEYS:
+				f[k] = int(floor(int(f[k]) / 2.0))
+			if Data.total_units(f) == 0:
+				f["inf"] = 1
+			world_event = {"id": id, "terr": t2, "round": round + 1, "born": round}
+			_vis_cache.clear()
+	_update_goal_marks()
+	_headline(world_event_text())
+	emit_event("world_event", {"id": id, "terr": int(world_event["terr"]), "round": int(world_event["round"]), "stage": "start"})
+
+
+func _resolve_world_event() -> void:
+	var ev: Dictionary = world_event
+	world_event = null
+	var E: Dictionary = Data.WORLD_EVENTS[ev["id"]]
+	var winner := -1
+	if str(E["kind"]) == "prize":
+		var t := int(ev["terr"])
+		winner = int(terr[t]["owner"])
+		if winner >= 0 and players[winner]["alive"]:
+			var R: Dictionary = E["reward"]
+			for k in R:
+				if k == "card":
+					if _draw_card(winner) != null:
+						emit_event("card", {"player": winner})
+				else:
+					players[winner]["res"][k] += float(R[k])
+			_headline("%s: %s controlla %s e riceve %s" % [E["name"], _pname(winner), Data.TERRITORIES[t]["name"], E["rtext"]])
+		else:
+			winner = -1
+			_headline("%s: nessuno controllava %s, il premio va perduto" % [E["name"], Data.TERRITORIES[t]["name"]])
+	_update_goal_marks()
+	emit_event("world_event", {"id": str(ev["id"]), "terr": int(ev["terr"]), "round": round, "stage": "end", "winner": winner})
 
 
 # ------------------------------------------------------------------ attacco e spostamento
@@ -2725,7 +3036,7 @@ func can_attack(from, to, forces = null) -> Dictionary:
 	if phase == "spostamento" or move_used:
 		return _fail("Fase di attacco già conclusa")
 	if attack_used:
-		return _fail("Hai già attaccato in questo turno")
+		return _fail("Hai già attaccato in questo turno" if attacks_max() <= 1 else "Hai già fatto tutti gli attacchi di questo turno")
 	if int(terr[from]["regroup"]) > 0:
 		return _fail("Truppe in riorganizzazione dopo la conquista")
 	if not Data.TERRITORIES[from]["adj"].has(int(to)):
@@ -2768,8 +3079,10 @@ func attack(from, to, forces = null) -> Dictionary:
 	var xp: int = int(tr.get("xp", 0))
 	tr["fresh"] = mini(int(tr.get("fresh", 0)), Data.total_units(tr["forces"]))
 	_set_phase("attacco")
-	attack_used = true
+	attacks_done += 1
+	attack_used = attacks_done >= attacks_max()
 	var defender: int = terr[to]["owner"]
+	_act_kind = "attack" if (human_idx < 0 or not fog or is_visible(human_idx, int(from)) or is_visible(human_idx, int(to))) else "far"
 	if defender >= 0:
 		_note_aggression(p, defender)
 	var sea: bool = Data.TERRITORIES[from]["sea"].has(int(to))
@@ -2884,6 +3197,7 @@ func move(from, to, forces) -> Dictionary:
 	_set_phase("spostamento")
 	var air: bool = can_airlift(p, from, to) and not Data.TERRITORIES[from]["adj"].has(int(to))
 	_anim(p, from, to, f, Data.TERRITORIES[from]["sea"].has(int(to)), false, air)
+	_act_kind = "move"
 	emit_event("move", {"type": "move", "player": p, "from": from, "to": to, "forces": Data.clone_forces(f)})
 	_after_action()
 	return _ok()
@@ -2989,13 +3303,20 @@ func update(real_dt: float) -> void:
 		return
 	if is_human_turn():
 		return
+	# attese proporzionate a ciò che c'è da guardare (notte 3): piena dopo un attacco visibile, 0.6 dopo uno spostamento,
+	# 0.3 dopo schieramenti, fortificazioni, cambi di fase e attacchi fuori vista
 	_ai_timer += dt
 	var guard := 0
-	while _ai_timer >= delay and guard < 8:
-		_ai_timer -= delay
+	while _ai_timer >= delay * _ai_w and guard < 8:
+		_ai_timer -= delay * _ai_w
 		guard += 1
+		_act_kind = ""
+		var who := current
 		if not _ai_step():
 			break
+		_ai_w = 1.0 if _act_kind == "attack" else (0.6 if _act_kind == "move" else 0.3)
+		if current != who:
+			_ai_w = 0.5
 
 
 ## Compatibilità: come update (dt in secondi reali)
@@ -3365,6 +3686,7 @@ static func _ser_player(P: Dictionary) -> Dictionary:
 		"stats": _ser_stats(P["stats"]),
 		"market": _fdict(P["market"] if P.get("market") != null else {"oil": 1.0, "steel": 1.0, "manpower": 1.0}, Data.MARKET["goods"]),
 		"militia_t": _f(P.get("militia_t", 0.0)), "upkeep": _f(P.get("upkeep", 0.0)),
+		"mission": _ser_mission(P.get("mission")),
 	}
 
 
@@ -3458,7 +3780,10 @@ func serialize() -> Dictionary:
 		"version": SAVE_VERSION, "game": "frontline_dominion_3d",
 		"opts": {"players": opl, "mode": str(opts["mode"]), "distribution": str(opts["distribution"]), "seed": str(opts["seed"]),
 			"ask_defense": bool(opts["ask_defense"]), "auto_battles": bool(opts["auto_battles"]), "fog": bool(opts.get("fog", false)),
-			"fog_mode": str(fog_mode) if (fog_mode != "none" or not fog) else "full", "scenario": str(opts.get("scenario", ""))},
+			"fog_mode": str(fog_mode) if (fog_mode != "none" or not fog) else "full", "scenario": str(opts.get("scenario", "")),
+			"missions": missions_on, "events": events_on, "attacks_per_turn": _i(opts.get("attacks_per_turn", 0))},
+		"pace": {"intents": _ser_intents(intents), "world_event": _ser_world_event(world_event), "next_event": _next_event,
+			"last_event": _last_event, "xrng_seed": str(_xrng.seed), "xrng_state": str(_xrng.state), "attacks_done": attacks_done},
 		"intel": _ser_times(intel),
 		"scen": {"siege_by": _siege_by, "hold_owner": _hold_owner, "hold_since": _hold_since, "targets": scenario_targets.duplicate()},
 		"rng_seed": str(rng.seed), "rng_state": str(rng.state),
@@ -3477,6 +3802,25 @@ func serialize() -> Dictionary:
 		"pacts": _ser_pacts(pacts, "a", "b"), "pact_offers": _ser_pacts(pact_offers, "from", "to"),
 		"pact_cd": _ser_times(_pact_cd), "aggr": _ser_times(_aggr),
 	}
+
+
+static func _ser_mission(m) -> Variant:
+	if not (m is Dictionary) or not Data.MISSION_REWARDS.has(str(m.get("reward", ""))):
+		return null
+	return {"terr": _i(m.get("terr"), -1), "until": _i(m.get("until")), "reward": str(m["reward"]), "born": _i(m.get("born"))}
+
+
+static func _ser_world_event(e) -> Variant:
+	if not (e is Dictionary) or not Data.WORLD_EVENTS.has(str(e.get("id", ""))):
+		return null
+	return {"id": str(e["id"]), "terr": _i(e.get("terr"), -1), "round": _i(e.get("round")), "born": _i(e.get("born"))}
+
+
+static func _ser_intents(arr) -> Array:
+	var out: Array = []
+	for it in arr:
+		out.append({"from": _i(it["from"]), "to": _i(it["to"]), "round": _i(it.get("round"))} if it is Dictionary else null)
+	return out
 
 
 static func _ser_pacts(arr, ka: String, kb: String) -> Array:
@@ -3523,7 +3867,13 @@ static func deserialize(d) -> Game:
 	var o := {"players": so["players"], "mode": str(so.get("mode", "conquista")), "distribution": str(so.get("distribution", "regionale")),
 		"seed": str(so.get("seed", "1")).to_int(), "ask_defense": bool(so.get("ask_defense", false)),
 		"auto_battles": bool(so.get("auto_battles", false)), "fog": bool(so.get("fog", false)),
-		"fog_mode": str(so.get("fog_mode", "")), "scenario": str(so.get("scenario", "")), "_no_start": true}
+		"fog_mode": str(so.get("fog_mode", "")), "scenario": str(so.get("scenario", "")), "_no_start": true,
+		"attacks_per_turn": _i(so.get("attacks_per_turn", 0))}
+	# migrazione v2/v3 → v4: ordini del comando ed eventi mondiali partono dal turno/round successivo (accesi nelle partite libere)
+	if so.has("missions"):
+		o["missions"] = bool(so["missions"])
+	if so.has("events"):
+		o["events"] = bool(so["events"])
 	var g := Game.new(o)
 	if g.players.size() != d["players"].size():
 		last_load_error = "Salvataggio non valido o danneggiato"
@@ -3590,6 +3940,9 @@ func _load_state(d: Dictionary) -> void:
 		P["market"] = _fdict(S.get("market", {"oil": 1.0, "steel": 1.0, "manpower": 1.0}), Data.MARKET["goods"])
 		P["militia_t"] = _f(S.get("militia_t"))
 		P["upkeep"] = _f(S.get("upkeep"))
+		P["mission"] = _ser_mission(S.get("mission"))
+		if P["mission"] != null and not _valid_terr(P["mission"]["terr"]):
+			P["mission"] = null
 	for i in terr.size():
 		var S = d["terr"][i]
 		if not (S is Dictionary):
@@ -3660,6 +4013,25 @@ func _load_state(d: Dictionary) -> void:
 	pact_offers = _ser_pacts(d.get("pact_offers", []), "from", "to").filter(func(of): return of["from"] >= 0 and of["from"] < np and of["to"] >= 0 and of["to"] < np)
 	_pact_cd = _ser_times(d.get("pact_cd", {}))
 	_aggr = _ser_times(d.get("aggr", {}))
+	# ritmo (v4); nei salvataggi v2/v3 manca: nessuna minaccia, primo evento dal round successivo
+	var pc = d.get("pace")
+	attacks_done = 1 if attack_used else 0
+	intents.fill(null)
+	world_event = null
+	_next_event = maxi(round + 1, int(Data.WORLD_EVENT_FIRST))
+	if pc is Dictionary:
+		attacks_done = maxi(0, _i(pc.get("attacks_done"), attacks_done))
+		var il2 = pc.get("intents")
+		if il2 is Array:
+			for i in mini(il2.size(), intents.size()):
+				var it = il2[i]
+				if it is Dictionary and _valid_terr(_i(it.get("from"), -1)) and _valid_terr(_i(it.get("to"), -1)):
+					intents[i] = {"from": _i(it["from"]), "to": _i(it["to"]), "round": _i(it.get("round"))}
+		world_event = _ser_world_event(pc.get("world_event"))
+		_next_event = maxi(1, _i(pc.get("next_event"), _next_event))
+		_last_event = str(pc.get("last_event", ""))
+		_xrng.seed = str(pc.get("xrng_seed", str(_xrng.seed))).to_int()
+		_xrng.state = str(pc.get("xrng_state", str(_xrng.state))).to_int()
 	intel = {}
 	var il = d.get("intel", {})
 	if il is Dictionary:
@@ -3682,6 +4054,7 @@ func _load_state(d: Dictionary) -> void:
 			for t in tl:
 				if _valid_terr(_i(t)):
 					scenario_targets.append(_i(t))
+	_update_goal_marks()
 	# IA
 	var sa = d.get("ais", [])
 	for i in ais.size():

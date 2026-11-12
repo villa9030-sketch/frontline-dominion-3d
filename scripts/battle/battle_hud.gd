@@ -123,6 +123,17 @@ class Overlay extends Control:
 							draw_line(sp + dd * hs2, sp + dd * (hs2 + 4.0), hcol, 1.5)
 				if u.g > 1:
 					draw_string(font, p2 + Vector2(w + 3, 5), "×%d" % b.sim.alive(u), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.85 * near_a))
+			# notte 3 — chi spara si rivela: lampo accanto all'unità (propria in copertura: «sei stato visto»; nemica: «vista per il fuoco»)
+			var rvt = u.get("reveal_t")
+			if rvt != null and float(rvt) > 0.0 and not occ and hs >= 0 and not u.air and (u.side != hs or int(u.cover) > 0):
+				var rp := sp + Vector2(maxf(rad, 11.0) + 9.0, -rad - 4.0)
+				var ra: float = clampf(float(rvt) / 1.5, 0.25, 1.0) * maxf(near_a, 0.6)
+				var rc := Color(1.0, 0.62, 0.2, ra) if u.side == hs else Color(1.0, 0.9, 0.5, ra)
+				for k in 8:
+					var an := k * TAU / 8.0
+					var dv := Vector2(cos(an), sin(an))
+					draw_line(rp + dv * 2.0, rp + dv * (6.5 if k % 2 == 0 else 4.5), rc, 1.6)
+				draw_circle(rp, 2.0, rc)
 			if not occ and near_a > 0.15 and u.side == hs:
 				var gx := sp + Vector2(-maxf(rad, 11.0) - 9.0, -rad - 4.0)
 				# mantieni posizione: piccolo scudo accanto all'unità
@@ -162,6 +173,7 @@ class Overlay extends Control:
 				draw_circle(dst, 3.0, oc)
 				draw_arc(dst, 6.0, 0, TAU, 12, Color(oc, oc.a * 0.6), 1.0)
 		_draw_ghosts(b, font)
+		_draw_contacts(b, font)
 		_draw_counters(b, font, counters)
 		_draw_pings(b)
 		_draw_floaters(b, font)
@@ -310,6 +322,28 @@ class Overlay extends Control:
 		draw_colored_polygon(sh, Color(0, 0, 0, 0.4 * a))
 		draw_colored_polygon(fl, Color(col, a))
 		draw_polyline(PackedVector2Array([fl[0], fl[1], fl[2], fl[0]]), Color(0, 0, 0, 0.6 * a), 1.0)
+
+	## Notte 3 — contatti: nemici di cui si conosce la posizione ma non il tipo. Gettone "?" pieno nel colore nemico
+	## (se l'unità era già stata identificata, il simbolo del tipo resta in piccolo).
+	func _draw_contacts(b, font: Font) -> void:
+		var sim = b.sim
+		if sim.hs < 0 or not b.has_method("is_contact_unit"):
+			return
+		var col: Color = b.side_color(1 - sim.hs)
+		var sc0: float = 1.0 + 0.45 * (b.strat.k if b.strat != null else 0.0)
+		var pulse: float = 0.5 + 0.5 * sin(b._wall_time * 3.0)
+		for u in sim.units:
+			if not b.is_contact_unit(u):
+				continue
+			var w := BattleTerrain.sim_to_world(u.x, u.y)
+			var p := Vector3(w.x, maxf(b.terrain.height(w.x, w.y), 0.0) + (14.0 if u.air else 2.0), w.y)
+			if b.cam.is_position_behind(p):
+				continue
+			var sp: Vector2 = b.cam.unproject_position(p)
+			if sp.x < -40 or sp.y < -40 or sp.x > size.x + 40 or sp.y > size.y + 40:
+				continue
+			var t := String(u.type) if bool(u.id_once[sim.hs]) else ""
+			BattleHud.draw_contact(self, font, sp + Vector2(0, -14), col, t, sc0, pulse)
 
 	## Ultime posizioni note dei nemici non più avvistati: pedina sbiadita con "?" e da quanto tempo.
 	func _draw_ghosts(b, font: Font) -> void:
@@ -558,6 +592,26 @@ class Brackets extends Control:
 			draw_line(o, o + Vector2(0, L * d.y), col, w)
 		# tacca centrale in alto (righello)
 		draw_line(Vector2(r.get_center().x - 6, r.position.y), Vector2(r.get_center().x + 6, r.position.y), Color(col, col.a * 0.6), 1.0)
+
+## Contatto (notte 3): gettone pieno con "?" — posizione nota, tipo ignoto (`t` = tipo ricordato, "" se mai identificata).
+static func draw_contact(ci: CanvasItem, font: Font, p: Vector2, col: Color, t: String, sc: float, pulse: float) -> void:
+	var hw := 13.0 * sc
+	var hh := 10.0 * sc
+	var fr := PackedVector2Array([p + Vector2(0, -hh - 3), p + Vector2(hw, 0), p + Vector2(0, hh + 3), p + Vector2(-hw, 0)])
+	var sh := PackedVector2Array()
+	for q in fr:
+		sh.append(q + Vector2(1.5, 2.0))
+	ci.draw_colored_polygon(sh, Color(0, 0, 0, 0.45))
+	ci.draw_colored_polygon(fr, Color(col.r * 0.55, col.g * 0.55, col.b * 0.55, 0.9))
+	var ec := Color(col.lightened(0.45), 0.75 + 0.25 * pulse)
+	for i in fr.size():
+		ci.draw_line(fr[i], fr[(i + 1) % fr.size()], ec, 1.6)
+	var fs := int(17 * sc)
+	var tw := font.get_string_size("?", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	ci.draw_string_outline(font, p + Vector2(-tw * 0.5, fs * 0.36), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 3, Color(0, 0, 0, 0.8))
+	ci.draw_string(font, p + Vector2(-tw * 0.5, fs * 0.36), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1.0, 0.93, 0.7))
+	if t != "":
+		draw_type_glyph(ci, t, p + Vector2(0, hh + 9.0 * sc), 4.0 * sc, Color(1, 1, 1, 0.75))
 
 ## Fantasma: ultima posizione nota di un nemico (cornice tratteggiata, "?" ed età).
 static func draw_ghost(ci: CanvasItem, font: Font, p: Vector2, col: Color, t: String, n: int, a: float, age: float) -> void:
@@ -962,7 +1016,7 @@ func _refresh_objectives() -> void:
 			(r["fill"] as StyleBoxFlat).bg_color = battle.side_color(taking).lightened(0.2)
 			txt = ("conquista in %ds" % ceili(BattleRules.OBJ_HOLD - float(hold[taking])))
 			if hs >= 0:
-				txt = ("tuo tra %ds" if taking == hs else "perso tra %ds") % ceili(BattleRules.OBJ_HOLD - float(hold[taking]))
+				txt = ("tuo tra %ds" if taking == hs else ("perso tra %ds" if own == hs else "al nemico tra %ds")) % ceili(BattleRules.OBJ_HOLD - float(hold[taking]))
 		else:
 			bar.value = 0.0
 			if own < 0:
@@ -976,7 +1030,15 @@ func _refresh_objectives() -> void:
 	var left := maxf(0.0, BattleRules.BATTLE_T - sim.time)
 	var eta0 := sim.reinf_eta(0)
 	var eta1 := sim.reinf_eta(1)
-	var hint := "%d · %d" % [held[0], held[1]]
+	var hint := "attaccante %d · difensore %d" % [held[0], held[1]]
+	if hs >= 0:
+		hint = "tu %d · nemico %d" % [held[hs], held[1 - hs]]
+	# notte 3: eventi annunciati con conto alla rovescia (attacco aereo)
+	if "pending" in sim:
+		for pe in sim.pending:
+			if String(pe["kind"]) == "air":
+				var who := "attacco aereo" if (hs < 0 or int(pe["side"]) == hs) else "ATTACCO AEREO NEMICO"
+				hint = "%s tra %ds · " % [who, ceili(maxf(0.0, float(pe["t"]) - sim.time))] + hint
 	if hs >= 0:
 		var mine_eta := eta0 if hs == 0 else eta1
 		var en_eta := eta1 if hs == 0 else eta0
@@ -1724,9 +1786,16 @@ class Minimap extends Control:
 				var age: float = maxf(0.0, sim.time - float(g.get("t", sim.time)))
 				var al := clampf(0.75 - age / 30.0, 0.25, 0.75)
 				c.draw_arc(p, 3.2, 0, TAU, 8, Color(gc, al), 1.2)
-		# unità (i nemici non avvistati non compaiono)
+		# unità (i nemici non avvistati non compaiono; i contatti "?" come rombo vuoto)
 		for u in sim.units:
-			if u.dead or not b.is_visible_unit(u):
+			if u.dead:
+				continue
+			if not b.is_visible_unit(u):
+				if b.has_method("is_contact_unit") and b.is_contact_unit(u):
+					var cw := BattleTerrain.sim_to_world(u.x, u.y)
+					var cp := w2m(cw.x, cw.y)
+					var cc: Color = b.side_color(u.side).lightened(0.3)
+					c.draw_polyline(PackedVector2Array([cp + Vector2(0, -3), cp + Vector2(3, 0), cp + Vector2(0, 3), cp + Vector2(-3, 0), cp + Vector2(0, -3)]), cc, 1.2)
 				continue
 			var w := BattleTerrain.sim_to_world(u.x, u.y)
 			var p := w2m(w.x, w.y)

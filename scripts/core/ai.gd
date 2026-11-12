@@ -31,6 +31,12 @@ var plan = null            # attacco pianificato {from, to, score}
 var seen := {}             # memoria della potenza nemica vista: t -> potenza
 var idle := 0              # turni consecutivi senza attacchi a giocatori (abbassa la prudenza)
 var last_pact := -99       # round dell'ultima proposta di patto
+## < 1 = le IA attaccano meno i giocatori senza averlo annunciato (più leggibili, meno opportuniste). Leva di taratura:
+## tests/sim.gd --surprise=0.75 (vedi docs/notte3_tabellone.md)
+static var surprise_mul := 1.0
+## Quanto vale per l'IA il bersaglio del proprio ordine del comando (tests/sim.gd --mbonus=X)
+static var mission_bonus := 0.0   # provati 5 e 2: spostano vittorie dalla FO a UL/CP (40 partite); a 0 il bilanciamento resta quello di prima
+var announced = null       # attacco annunciato al turno scorso {from, to} (notte 3: minacce visibili)
 var stats := {"turns": 0, "ms": 0.0, "maxMs": 0.0, "attacks": 0, "wins": 0, "builds": 0, "research": 0, "cards": 0,
 	"recruits": 0, "moves": 0, "forts": 0, "trades": 0, "mercs": 0, "errors": 0}
 
@@ -75,8 +81,11 @@ func save_state() -> Dictionary:
 	var pl = null
 	if plan is Dictionary:
 		pl = {"from": int(plan["from"]), "to": int(plan["to"]), "score": float(plan.get("score", 0.0))}
+	var an = null
+	if announced is Dictionary:
+		an = {"from": int(announced["from"]), "to": int(announced["to"])}
 	return {"idx": idx, "rng_seed": str(rng.seed), "rng_state": str(rng.state), "stage": stage, "plan": pl, "seen": sn,
-		"idle": idle, "last_pact": last_pact, "stats": st}
+		"idle": idle, "last_pact": last_pact, "stats": st, "announced": an}
 
 
 func load_state(d: Dictionary) -> void:
@@ -92,6 +101,8 @@ func load_state(d: Dictionary) -> void:
 			seen[int(str(k))] = float(sn[k])
 	idle = int(d.get("idle", 0))
 	last_pact = int(d.get("last_pact", -99))
+	var an = d.get("announced")
+	announced = {"from": int(an.get("from", -1)), "to": int(an.get("to", -1))} if an is Dictionary else null
 	var st = d.get("stats", {})
 	if st is Dictionary:
 		for k in st:
@@ -103,6 +114,11 @@ func load_state(d: Dictionary) -> void:
 func begin_turn() -> void:
 	stage = 0
 	plan = null
+	# la minaccia annunciata al turno scorso (Game la toglie subito dopo): l'IA tende a mantenerla
+	var g = game
+	announced = null
+	if g != null and "intents" in g and idx < g.intents.size() and g.intents[idx] is Dictionary:
+		announced = {"from": int(g.intents[idx]["from"]), "to": int(g.intents[idx]["to"])}
 	_turn_ms = 0.0
 	stats["turns"] += 1
 
@@ -134,11 +150,14 @@ func turn_step() -> bool:
 				acted = _do_fortify()
 			3:
 				acted = _do_attack()
+				if acted and g.pending_battle == null and g.over == null and not g.attack_used and not g.move_used:
+					stage = 3   # altri attacchi disponibili in questo turno (tregua iniziale, «Finestra di bel tempo»)
 				if not acted and g.phase == "rifornimento":
 					g.end_phase()
 					acted = true
 			4:
 				acted = _do_move()
+				_announce()
 		var sms := (Time.get_ticks_usec() - ts) / 1000.0
 		var key := "st%d" % s
 		if sms > float(prof.get(key, 0.0)):
@@ -617,6 +636,12 @@ func _value_raw(j: int) -> float:
 			v += 8.0
 		elif ob.get("type") == "hold" and ob.get("terrs", []).has(j):
 			v += 25.0
+	# notte 3: ordine del comando e territorio premio dell'evento mondiale
+	var ms = p.get("mission")
+	if ms is Dictionary and int(ms["terr"]) == j:
+		v += mission_bonus
+	if g.world_event is Dictionary and int(g.world_event["terr"]) == j and Data.WORLD_EVENTS[g.world_event["id"]]["kind"] == "prize":
+		v += 6.0
 	if g.siege_idx >= 0 and g.siege_idx != idx and o == g.siege_idx:
 		v += 8.0
 	if g.hold_terrs.has(j):
@@ -693,7 +718,8 @@ func _hq_need(skip: int = -1) -> float:
 
 
 ## Miglior attacco possibile ora: {from, to, score, forces} o null. with_pool: aggiunge il pool al territorio di partenza.
-func _choose_attack(with_pool: bool) -> Variant:
+## players_only + pool_over: valutazione dell'attacco del PROSSIMO turno (minaccia da annunciare), con i rinforzi attesi
+func _choose_attack(with_pool: bool, pool_over = null, players_only: bool = false) -> Variant:
 	var g = game
 	var thr: float = (float(diff["margin"]) - 1.0) * 0.65
 	thr = maxf(0.05, thr - 0.04 * mini(idle, 6))
@@ -701,6 +727,8 @@ func _choose_attack(with_pool: bool) -> Variant:
 		thr += 0.1   # la risoluzione tattica premia il difensore più della formula di previsione: margine in più
 	var noise: float = float(diff["noise"])
 	var pool: Dictionary = p["pool"] if with_pool else {}
+	if pool_over is Dictionary:
+		pool = pool_over
 	var best = null
 	var bs := 0.0
 	var quick: Array = []
@@ -712,11 +740,14 @@ func _choose_attack(with_pool: bool) -> Variant:
 			continue
 		for tg in g.attack_targets(idx, t):
 			var j: int = tg["idx"]
+			if players_only and int(g.terr[j]["owner"]) < 0:
+				continue
 			var ap: float = own_pow[t] + (_pow(pool) if with_pool else 0.0)
 			var dp: float = enemy_pow[j] * Data.TERRAINS[Data.TERRITORIES[j]["ter"]]["def"]
 			if ap < dp * 0.9:
 				continue
-			quick.append([t, j, _value(j) * (ap / maxf(1.0, dp + ap))])
+			var kept: bool = announced is Dictionary and int(announced["from"]) == t and int(announced["to"]) == j
+			quick.append([t, j, _value(j) * (ap / maxf(1.0, dp + ap)) * (3.0 if kept else 1.0)])
 	quick.sort_custom(func(a, b): return a[2] > b[2])
 	var n := 0
 	for q in quick:
@@ -754,6 +785,10 @@ func _choose_attack(with_pool: bool) -> Variant:
 		if expo > hold_pow * 1.6:
 			v *= 0.6
 		var s := v * (0.4 + left) * (1.0 + (rng.randf() * 2.0 - 1.0) * noise)
+		if announced is Dictionary and int(announced["from"]) == t and int(announced["to"]) == j:
+			s *= 1.8   # mantiene la minaccia annunciata, se è ancora un buon attacco
+		elif not players_only and int(g.terr[j]["owner"]) >= 0:
+			s *= surprise_mul   # attacco a un giocatore non annunciato: meno probabile (le IA sono più leggibili)
 		if s > bs:
 			bs = s
 			best = {"from": t, "to": j, "score": s, "forces": send}
@@ -801,6 +836,20 @@ func _do_attack() -> bool:
 	if r.get("result") is Dictionary and r["result"].get("winner") == "att":
 		stats["wins"] += 1
 	return true
+
+
+## Fine turno: annuncia l'attacco contro un giocatore che conto di fare al prossimo turno (Game.set_intent): il bersaglio
+## lo vede sul confine e può rinforzarsi o colpire per primo. Solo attacchi plausibili con i rinforzi del prossimo turno.
+func _announce() -> void:
+	var g = game
+	if g == null or g.over != null or not g.has_method("set_intent") or g.current != idx:
+		return
+	if g.round + 1 <= g.truce_rounds:
+		return
+	_analyze()
+	var a = _choose_attack(true, {"inf": int(g.reinforce_amount(idx))}, true)
+	if a != null:
+		g.set_intent(idx, int(a["from"]), int(a["to"]))
 
 
 # ---------------------------------------------------------------------------- spostamento

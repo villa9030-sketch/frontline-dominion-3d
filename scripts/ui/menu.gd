@@ -391,8 +391,8 @@ func _build_new() -> void:
 	g.add_child(_opt("Opzioni battaglia", ob))
 	var tips_on := bool(Settings.get_value("tips"))
 	var rb := UIKit.hbox(2)
-	var fb := _seg("m-fog", String(o.get("fog_mode", "light")), [["none", "Nebbia: no"], ["light", "Leggera"], ["full", "Totale"]])
-	fb.tooltip_text = "Nebbia di guerra. Leggera (consigliata): forze esatte nei tuoi territori e in quelli confinanti,\naltrove una stima «circa 10–15». Totale: lontano non vedi nulla. Nessuna: tutto visibile.\nVale anche per le IA, che decidono su ciò che vedono (carte inganno: divisione falsa, silenzio radio, ricognizione)."
+	var fb := _seg("m-fog", String(o.get("fog_mode", "none")), [["none", "Nebbia: no"], ["light", "Leggera"], ["full", "Totale"]])
+	fb.tooltip_text = "Nebbia di guerra. Nessuna (consigliata): tutte le forze sono visibili, si gioca a carte scoperte.\nLeggera: forze esatte nei tuoi territori e in quelli confinanti, altrove una stima «circa 10–15». Totale: lontano non vedi nulla.\nCon la nebbia valgono le carte inganno (divisione falsa, silenzio radio, ricognizione); vale anche per le IA."
 	for c in fb.get_children():
 		c.tooltip_text = fb.tooltip_text
 	rb.add_child(fb)

@@ -4,6 +4,13 @@ Scopo: la campagna a turni decide com'è la battaglia e la battaglia lascia trac
 Tutto vale sia nella battaglia comandata (3D) sia nella risoluzione automatica, che usa la stessa BattleSim.
 Le costanti sono in `scripts/battle/battle_rules.gd` (sezione «Omogeneità») e in `scripts/core/game.gd`.
 
+> **Aggiornamento notte 3** (`docs/notte3_battaglia.md`, SPEC3D «Notte 3 — battaglia»): gli obiettivi sono 3–4 e almeno 2
+> stanno nella **fascia centrale** del campo (neutri: ponti/guadi, altura, crocevia, località); il primo edificio del
+> territorio è al 60 % del campo; la conquista richiede **30 s** (non 60); i rinforzi entrano a **90 s** (difensore) /
+> **105 s** (attaccante) con 20 s di preavviso; stallo dell'IA dopo 60 s senza danni; l'IA attaccante si ritira da 80 s
+> sotto il 40 % della potenza del difensore; iniziativa dell'attaccante ×1.2; i nemici si vedono come contatti «?».
+> Dove questo documento dice altro, vale l'aggiornamento.
+
 ## 1. Durata e obiettivi di battaglia
 - **Limite: 5 minuti** di battaglia (`BattleRules.BATTLE_T = 300` s), anche per la risoluzione automatica
   (`AUTO_MAX_TIME = 300`). L'HUD mostra il **tempo rimanente** (rosso sotto i 60 s).
@@ -63,7 +70,7 @@ Le costanti sono in `scripts/battle/battle_rules.gd` (sezione «Omogeneità») e
 - Salvataggi: `SAVE_VERSION = 3`; i salvataggi v2 si caricano (worn = 0, nebbia dal vecchio bool).
 
 ## 5. Carte inganno e nebbia leggera
-- **Nebbia**: tre modalità per le nuove campagne (`opts.fog_mode`): **nessuna**, **leggera** (predefinita), **totale**.
+- **Nebbia**: tre modalità per le nuove campagne (`opts.fog_mode`): **nessuna** (predefinita dalla notte 3), **leggera**, **totale**.
   - nessuna: forze esatte ovunque;
   - leggera: esatte nei territori propri e confinanti (AAN +1 anello col radar); altrove una **stima** «circa 10–15»
     (`estimate_range`: ±25 %, arrotondata a 5, mai sconosciuta); edifici lontani sconosciuti;
@@ -71,7 +78,8 @@ Le costanti sono in `scripts/battle/battle_rules.gd` (sezione «Omogeneità») e
   `game.fog` resta vero per leggera/totale (compatibilità).
 - **Nuove operazioni dei tris** (`Data.OPS`), stesso sistema delle carte:
   - **Divisione falsa** (`finta`, bersaglio proprio): per **2 round** i nemici vedono quel territorio solo come stima, gonfiata di
-    **+8 unità** (anche se confinanti, anche senza nebbia).
+    **+8 unità** (anche se confinanti). Dalla notte 3 le tre carte inganno si giocano **solo con la nebbia attiva**
+    (`game.op_available`): senza nebbia non c'è nulla da nascondere.
   - **Ricognizione** (`ricognizione`, bersaglio nemico): per **2 round** vedi esattamente forze, edifici e fortificazioni di quel
     territorio e dei suoi confinanti; annulla divisioni false e silenzi radio lì.
   - **Silenzio radio** (`silenzio`, bersaglio proprio): per **2 round** i nemici vedono «?» (forze sconosciute) e la previsione
